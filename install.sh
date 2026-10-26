@@ -147,6 +147,18 @@ install_valid_name() {
   [[ "$1" =~ $INSTALL_NAME_REGEX ]]
 }
 
+# True (0) iff the database password can go into DATABASE_URL as-is --
+# docker-compose.yml pastes it into postgres://fozzie:<password>@postgres
+# with no escaping, so it may only use what RFC 3986 allows unescaped in
+# a URL's userinfo: unreserved characters and sub-delims. 0.1.0's
+# installer generated it with `openssl rand -base64`, and a "/" in that
+# ended the host early -- "invalid port number" on roughly 40% of fresh
+# installs (found live 2026-10-27). It's hex now.
+INSTALL_URL_SAFE_PASSWORD_REGEX="^[A-Za-z0-9._~!\$&'()*+,;=-]+$"
+install_url_safe_password() {
+  [[ "$1" =~ $INSTALL_URL_SAFE_PASSWORD_REGEX ]]
+}
+
 # True (0) iff port is an integer from 1 to 65535, with no leading zero.
 install_valid_port() {
   [[ "$1" =~ ^[123456789][0123456789]{0,4}$ ]] && [ "$1" -le 65535 ]
@@ -928,9 +940,21 @@ main() {
   local merged
   merged="$(install_merge_env "$ENV_FILE" "$IMPORT_ENV" "$INSTALL_CORE_PORT" "$INSTALL_DASHBOARD_PORT" \
     "$NEW_GHCR_USERNAME" "$NEW_GHCR_TOKEN" \
-    "$(openssl rand -base64 24)" "$(openssl rand -base64 32)" "$(openssl rand -hex 32)" \
+    "$(openssl rand -hex 24)" "$(openssl rand -base64 32)" "$(openssl rand -hex 32)" \
     "$PROJECT" "$DIR")" ||
     die "Couldn't write $ENV_FILE."
+  # Hex for new installs (see install_url_safe_password); this catches one
+  # made by 0.1.0's installer, whose password can never work. Its database
+  # was created with that password, so it can't just be swapped here.
+  local db_password
+  db_password="$(printf '%s\n' "$merged" | sed -n 's/^POSTGRES_PASSWORD=//p' | tail -n 1)"
+  if ! install_url_safe_password "$db_password"; then
+    die "This instance's database password (POSTGRES_PASSWORD in $ENV_FILE) has characters" \
+      "that break the database connection -- a bug in Fozzie 0.1.0's installer, so core-api" \
+      "has never been able to start. If you haven't used this instance yet, reset it:" \
+      "  cd \"$DIR\" && docker compose -p $PROJECT --env-file .env down -v" \
+      "then delete the POSTGRES_PASSWORD line from $ENV_FILE and run this installer again."
+  fi
   (
     umask 077
     printf '%s\n' "$merged" >"$DIR/.env.tmp"
