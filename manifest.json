@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "latest": "0.1.0",
+  "releases": [
+    {
+      "version": "0.1.0",
+      "publishedAt": "2026-10-26T06:08:35.269Z",
+      "minUpgradableFrom": "0.1.0",
+      "lastMigration": "20261026120000_update_run",
+      "notes": "First private beta.\n",
+      "images": {
+        "core-api": "ghcr.io/functionberry/fozzie-dist-core-api@sha256:dd3f3d31cefb4f6ffcf5f6a0588f5650ab9a8948bd387d25ac2174633c5bae47",
+        "dashboard": "ghcr.io/functionberry/fozzie-dist-dashboard@sha256:25c9a749c519ca9e69344dccd5a0b90486b0af3aaec19224f7adbf75935f5745",
+        "updater": "ghcr.io/functionberry/fozzie-dist-updater@sha256:17f7c31a5ceda007d4f3c2fbc7f5945e4c6529bd3b07653ffc11fd4459d55539"
+      }
+    }
+  ]
+}

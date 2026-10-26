@@ -1,0 +1,173 @@
+# Fozzie, run from the published release images (ADR-0172 decision 8).
+# Standalone: no base file, no build step, nothing to clone. install.sh
+# downloads this file to ~/fozzie/ (or ~/fozzie-<name>/ for a named
+# instance) next to a generated .env, and always passes the Compose
+# project name with `-p` -- so there's no `name:` here, and the same file
+# can run more than one independently-named, independently-ported
+# instance side by side.
+#
+# The image refs come from the release's latest.env, pinned by digest,
+# and install.sh writes them into .env, with COMPOSE_PROJECT and
+# FOZZIE_INSTALL_DIR for the updater. Re-running install.sh updates
+# everything; the updater service below does a one-click update of
+# core-api, dashboard and backup in place. Every port binds to the host's
+# own loopback interface only.
+#
+# The volume keys match the source-built local install's (ADR-0143), so
+# an instance installed that way can switch to these images and keep its
+# data: under the same `-p` project name the volumes resolve to the same
+# Docker volumes (<project>_fozzie_pg_local_data and so on).
+#
+# Nothing here needs a Compose newer than 2.20.0.
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: fozzie
+      POSTGRES_DB: fozzie
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run install.sh -- it sets POSTGRES_PASSWORD in .env}
+    # No host port: only core-api and backup talk to it, over the
+    # Compose network.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fozzie -d fozzie"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - fozzie_pg_local_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # The image's own CMD runs the migrations and then starts the server,
+  # so there's no `command:` here.
+  core-api:
+    image: ${FOZZIE_CORE_API_IMAGE:?Run install.sh -- it sets FOZZIE_CORE_API_IMAGE in .env}
+    environment:
+      DATABASE_URL: postgres://fozzie:${POSTGRES_PASSWORD:?Run install.sh -- it sets POSTGRES_PASSWORD in .env}@postgres:5432/fozzie?connection_limit=10
+      PORT: 4000
+      GIT_REPO_ROOT: /data/git-repos
+      ATTACHMENT_ROOT: /data/attachments
+      # Decrypts the secrets Fozzie stores. Generated once by install.sh
+      # and kept: losing it makes those secrets unreadable.
+      FOZZIE_ENCRYPTION_KEY: ${FOZZIE_ENCRYPTION_KEY:?Run install.sh -- it sets FOZZIE_ENCRYPTION_KEY in .env}
+      # Optional SMTP relay for invite emails. Unset means invite links
+      # are shown once in the UI instead. Add these to .env yourself;
+      # install.sh keeps any line it doesn't manage.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_SECURE: ${SMTP_SECURE:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      # Links in invite emails, and federation callbacks, point back at
+      # this instance's own ports.
+      DASHBOARD_URL: http://localhost:${DASHBOARD_PORT:-5173}
+      FOZZIE_PUBLIC_URL: http://localhost:${CORE_API_PORT:-4000}
+      FOZZIE_MERGE_TEST_GATE: ${FOZZIE_MERGE_TEST_GATE:-warn}
+      FOZZIE_UI_TEST_GATE: ${FOZZIE_UI_TEST_GATE:-warn}
+      FOZZIE_DEPLOY_ENVIRONMENT_ID: ${FOZZIE_DEPLOY_ENVIRONMENT_ID:-}
+      SUPERVISOR_ESCALATION_ASSIGNEE: ${SUPERVISOR_ESCALATION_ASSIGNEE:-}
+      FOZZIE_UI_RUNNER_PARTICIPANT_ID: ${FOZZIE_UI_RUNNER_PARTICIPANT_ID:-}
+      # No FOZZIE_VERSION here: the image's own baked-in version is what
+      # instanceVersion reports, so the updater's health check verifies
+      # the image that's actually running, not .env's say-so.
+      # Where Fozzie checks for a newer release (ADR-0172). Only this
+      # file sets it, so only an instance run from the release images
+      # ever checks.
+      FOZZIE_RELEASE_MANIFEST_URL: https://functionberry.github.io/fozzie-releases/manifest.json
+      # Shared with the updater, so only it can report update progress
+      # (ADR-0172). Generated once by install.sh.
+      FOZZIE_UPDATER_TOKEN: ${FOZZIE_UPDATER_TOKEN:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${CORE_API_PORT:-4000}:4000"
+    volumes:
+      - fozzie_git_repos_local:/data/git-repos
+      - fozzie_attachments_local:/data/attachments
+    restart: unless-stopped
+
+  dashboard:
+    image: ${FOZZIE_DASHBOARD_IMAGE:?Run install.sh -- it sets FOZZIE_DASHBOARD_IMAGE in .env}
+    environment:
+      # Read at container start. The browser, not the Compose network,
+      # talks to this URL, so it's core-api's host port.
+      GRAPHQL_URL: http://localhost:${CORE_API_PORT:-4000}/graphql
+    depends_on:
+      - core-api
+    ports:
+      - "127.0.0.1:${DASHBOARD_PORT:-5173}:5173"
+    restart: unless-stopped
+
+  # A backup of the database, git repos and attachments every
+  # BACKUP_INTERVAL_SECONDS (default daily), keeping the newest
+  # BACKUP_RETAIN_COUNT (default 14), in the fozzie_backups_local volume.
+  # Same image as core-api. $$ escapes Compose's own interpolation, so
+  # the container's shell reads BACKUP_INTERVAL_SECONDS from its own
+  # environment below. Take one now with
+  #   docker compose ... run --rm backup node dist/backupCli.js run
+  # and list them with `... node dist/backupCli.js list`.
+  backup:
+    image: ${FOZZIE_CORE_API_IMAGE:?Run install.sh -- it sets FOZZIE_CORE_API_IMAGE in .env}
+    environment:
+      DATABASE_URL: postgres://fozzie:${POSTGRES_PASSWORD:?Run install.sh -- it sets POSTGRES_PASSWORD in .env}@postgres:5432/fozzie
+      FOZZIE_ENCRYPTION_KEY: ${FOZZIE_ENCRYPTION_KEY:?Run install.sh -- it sets FOZZIE_ENCRYPTION_KEY in .env}
+      GIT_REPO_ROOT: /data/git-repos
+      ATTACHMENT_ROOT: /data/attachments
+      BACKUP_ROOT: /data/backups
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_RETAIN_COUNT: ${BACKUP_RETAIN_COUNT:-14}
+    volumes:
+      - fozzie_git_repos_local:/data/git-repos
+      - fozzie_attachments_local:/data/attachments
+      - fozzie_backups_local:/data/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: sh -c 'while true; do node dist/backupCli.js run; sleep "$$BACKUP_INTERVAL_SECONDS"; done'
+    restart: unless-stopped
+
+  # One-click updates (ADR-0172 decisions 10 and 11, docker/updater/
+  # README.md). Polls core-api for an admin-requested update and performs
+  # it -- back up, pull by digest, recreate, health check, roll back by
+  # itself on failure -- through the Docker socket. No port, no model. It
+  # only ever runs `docker compose -p $COMPOSE_PROJECT` against this file
+  # and .env (the install directory is mounted at its host path for
+  # that), and only on core-api, dashboard and backup: never postgres,
+  # never itself, never a volume. It doesn't update itself -- re-running
+  # install.sh does. The release keys (FOZZIE_VERSION, the image refs,
+  # POSTGRES_PASSWORD) are deliberately not in its environment: compose
+  # would let them override .env.
+  updater:
+    image: ${FOZZIE_UPDATER_IMAGE:?Run install.sh -- it sets FOZZIE_UPDATER_IMAGE in .env}
+    environment:
+      COMPOSE_PROJECT: ${COMPOSE_PROJECT:?Run install.sh -- it sets COMPOSE_PROJECT in .env}
+      FOZZIE_INSTALL_DIR: ${FOZZIE_INSTALL_DIR:?Run install.sh -- it sets FOZZIE_INSTALL_DIR in .env}
+      # Shared with core-api above.
+      FOZZIE_UPDATER_TOKEN: ${FOZZIE_UPDATER_TOKEN:-}
+      # The same manifest core-api checks; the updater re-reads it itself
+      # and takes only image refs pinned by digest from it.
+      FOZZIE_RELEASE_MANIFEST_URL: https://functionberry.github.io/fozzie-releases/manifest.json
+      # To pull the new images: Docker Desktop's credential store isn't
+      # readable from a container.
+      GHCR_USERNAME: ${GHCR_USERNAME:-}
+      GHCR_TOKEN: ${GHCR_TOKEN:-}
+      CORE_API_URL: http://core-api:4000
+      # Its own image, so it can tell when a release ships a newer one.
+      FOZZIE_UPDATER_IMAGE: ${FOZZIE_UPDATER_IMAGE}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${FOZZIE_INSTALL_DIR:?Run install.sh -- it sets FOZZIE_INSTALL_DIR in .env}:${FOZZIE_INSTALL_DIR:?Run install.sh -- it sets FOZZIE_INSTALL_DIR in .env}
+      - fozzie_updater_state:/state
+    depends_on:
+      - core-api
+    restart: unless-stopped
+
+volumes:
+  fozzie_pg_local_data:
+  fozzie_git_repos_local:
+  fozzie_attachments_local:
+  fozzie_backups_local:
+  # The updater's run.json and report queue, so a restart resumes a run.
+  fozzie_updater_state:
