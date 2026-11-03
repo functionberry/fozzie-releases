@@ -164,6 +164,37 @@ To remove the rest:
 - log Docker out of GitHub's registry: `docker logout ghcr.io`;
 - revoke the token at <https://github.com/settings/tokens>.
 
+## Using a local model (Ollama)
+
+You can use a model server running on your own computer, such as Ollama,
+as an AI provider:
+
+1. Start Ollama so Docker can reach it. By default it only accepts
+   connections from your computer itself, which shuts Fozzie out:
+
+   ```sh
+   OLLAMA_HOST=0.0.0.0 ollama serve
+   ```
+
+   On Linux, if Ollama runs as a systemd service, run
+   `sudo systemctl edit ollama`, add these lines, save, then run
+   `sudo systemctl restart ollama`:
+
+   ```ini
+   [Service]
+   Environment="OLLAMA_HOST=0.0.0.0"
+   ```
+
+2. In Fozzie, go to Settings → AI providers and click **Add resource**.
+   Pick the **OpenAI-compatible** provider type, and set the base URL to
+   `http://host.docker.internal:11434/v1`. Don't use `localhost`: Fozzie's
+   server runs in its own container, so to it `localhost` means that
+   container, not your computer.
+
+3. `host.docker.internal` works on Mac, Windows and Linux (Fozzie's compose
+   file sets it up on Linux). If listing the models fails, the error says
+   what to fix.
+
 ## Feedback
 
 Email Mark at <TODO: Mark to fill in>. Screenshots, the version (shown in
@@ -203,6 +234,11 @@ docker compose -p fozzie-local --env-file .env logs core-api
 
 The last lines usually say what went wrong. Send them to Mark if it isn't
 obvious.
+
+**"Couldn't list models" for a model on your computer.** See
+[Using a local model (Ollama)](#using-a-local-model-ollama): use
+`host.docker.internal`, not `localhost`, and start Ollama with
+`OLLAMA_HOST=0.0.0.0`.
 
 **"The updater didn't respond."** The `updater` container, which carries
 out one-click updates, isn't running. Check it:

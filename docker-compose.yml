@@ -63,6 +63,7 @@ services:
       # this instance's own ports.
       DASHBOARD_URL: http://localhost:${DASHBOARD_PORT:-5173}
       FOZZIE_PUBLIC_URL: http://localhost:${CORE_API_PORT:-4000}
+      FOZZIE_FEDERATION_SYNC_INTERVAL_MS: ${FOZZIE_FEDERATION_SYNC_INTERVAL_MS:-60000}
       FOZZIE_MERGE_TEST_GATE: ${FOZZIE_MERGE_TEST_GATE:-warn}
       FOZZIE_UI_TEST_GATE: ${FOZZIE_UI_TEST_GATE:-warn}
       FOZZIE_DEPLOY_ENVIRONMENT_ID: ${FOZZIE_DEPLOY_ENVIRONMENT_ID:-}
@@ -78,11 +79,21 @@ services:
       # Shared with the updater, so only it can report update progress
       # (ADR-0172). Generated once by install.sh.
       FOZZIE_UPDATER_TOKEN: ${FOZZIE_UPDATER_TOKEN:-}
+      # Minutes an update waits for running agents (live work leases) to
+      # finish before proceeding anyway (ADR-0172). 0 means no wait; an
+      # install with no agents running doesn't wait at all.
+      FOZZIE_UPDATE_DRAIN_MINUTES: ${FOZZIE_UPDATE_DRAIN_MINUTES:-30}
     depends_on:
       postgres:
         condition: service_healthy
     ports:
       - "127.0.0.1:${CORE_API_PORT:-4000}:4000"
+    extra_hosts:
+      # core-api lists an AI resource's models, so it has to reach a model
+      # server on this computer (e.g. Ollama) at host.docker.internal.
+      # Docker Desktop on Mac and Windows provides this out of the box; the
+      # explicit mapping here makes it work on plain Linux Docker too.
+      - "host.docker.internal:host-gateway"
     volumes:
       - fozzie_git_repos_local:/data/git-repos
       - fozzie_attachments_local:/data/attachments
