@@ -64,6 +64,7 @@ services:
       DASHBOARD_URL: http://localhost:${DASHBOARD_PORT:-5173}
       FOZZIE_PUBLIC_URL: http://localhost:${CORE_API_PORT:-4000}
       FOZZIE_FEDERATION_SYNC_INTERVAL_MS: ${FOZZIE_FEDERATION_SYNC_INTERVAL_MS:-60000}
+      FOZZIE_ARCHIVE_SWEEP_INTERVAL_MS: ${FOZZIE_ARCHIVE_SWEEP_INTERVAL_MS:-}
       FOZZIE_MERGE_TEST_GATE: ${FOZZIE_MERGE_TEST_GATE:-warn}
       FOZZIE_UI_TEST_GATE: ${FOZZIE_UI_TEST_GATE:-warn}
       FOZZIE_DEPLOY_ENVIRONMENT_ID: ${FOZZIE_DEPLOY_ENVIRONMENT_ID:-}
@@ -83,6 +84,14 @@ services:
       # finish before proceeding anyway (ADR-0172). 0 means no wait; an
       # install with no agents running doesn't wait at all.
       FOZZIE_UPDATE_DRAIN_MINUTES: ${FOZZIE_UPDATE_DRAIN_MINUTES:-30}
+      # Limits for importing a repository from a URL (ADR-0203). Empty
+      # means the defaults: 500 MB, 600 seconds, 2 imports at once, and
+      # private network addresses refused (set the last to true to allow
+      # a git server on your LAN).
+      FOZZIE_REPO_IMPORT_MAX_MB: ${FOZZIE_REPO_IMPORT_MAX_MB:-}
+      FOZZIE_REPO_IMPORT_TIMEOUT_SECONDS: ${FOZZIE_REPO_IMPORT_TIMEOUT_SECONDS:-}
+      FOZZIE_REPO_IMPORT_MAX_CONCURRENT: ${FOZZIE_REPO_IMPORT_MAX_CONCURRENT:-}
+      FOZZIE_REPO_IMPORT_ALLOW_PRIVATE_NETWORKS: ${FOZZIE_REPO_IMPORT_ALLOW_PRIVATE_NETWORKS:-}
     depends_on:
       postgres:
         condition: service_healthy
