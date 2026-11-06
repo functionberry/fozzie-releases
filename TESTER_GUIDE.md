@@ -18,9 +18,9 @@ listens on `localhost` only.
 ## Getting access
 
 1. Send Mark your GitHub username.
-2. GitHub then emails you an invite for each of the three Fozzie packages
-   (`fozzie-dist-core-api`, `fozzie-dist-dashboard` and
-   `fozzie-dist-updater`). Accept all three. Until you do, the installer
+2. GitHub then emails you an invite for each of the five Fozzie packages
+   (`fozzie-dist-core-api`, `fozzie-dist-dashboard`, `fozzie-dist-updater`,
+   `fozzie-dist-agent` and `fozzie-dist-orchestrator`). Accept all five. Until you do, the installer
    can't download Fozzie.
 
 ## Creating a GitHub token

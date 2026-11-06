@@ -1,7 +1,21 @@
 {
   "schema": 1,
-  "latest": "0.1.3",
+  "latest": "0.1.4",
   "releases": [
+    {
+      "version": "0.1.4",
+      "publishedAt": "2026-11-06T22:24:58.118Z",
+      "minUpgradableFrom": "0.1.0",
+      "lastMigration": "20261110120000_password_reset_token",
+      "notes": "Agents now run out of the box on a fresh install, numbered pagination, consistent page layouts and scrolling, faster Explorer with a preview pane, a repository code browser, and many usability fixes.\n\n- Agent: Implement\n- Agent: Implement\n- Agent: Implement\n- Agent: Implement\n- Agent: Implement\n- Renumber numbered-pagination ADR to 0214 (0213 taken on main)\n- In-app agents join INTERNAL when created\n- Remove accidentally committed tsconfig.tsbuildinfo and gitignore it\n- Scrolling part 2: move top-level views onto PageLayout, drop EntityList's own scroll\n- ADR-0212: note the mcp-task toolset as built\n- Settings: move every sub-page onto PageLayout\n- Fix EntityDetailView scroll test: mock EntityHeaderStatus for child-1\n- Test: drop duplicate entityHeaderStatusMock import after merging main\n- Agent: Implement\n- Test: add EntityHeaderStatus mock to EntityDetailView scroll tests\n- Description tab: compact list of direct children under the description\n- Explorer: server-side search for the name filter\n- Scrolling: tab panels own the scroll; fix the entity Activity tab\n- Search: mark archived results with an ArchivedBadge (ADR-0209)\n- Agent: Implement\n- Prioritisation: hide archived batches, with a Show archived toggle\n- Children tab: Show archived toggle (ADR-0209)\n",
+      "images": {
+        "core-api": "ghcr.io/functionberry/fozzie-dist-core-api@sha256:d9e493632339e70b058071bdead98416005c16d27b87c540ce44cc57c8c02ca5",
+        "dashboard": "ghcr.io/functionberry/fozzie-dist-dashboard@sha256:a5415f62bf155191cb9901e4e268490d130e213ab426f2c49e9654658c785d60",
+        "updater": "ghcr.io/functionberry/fozzie-dist-updater@sha256:67ddaaa49ab57dcab9585d08d7cabe9d76b4899e1112ae26136cb404e72b19d6",
+        "agent": "ghcr.io/functionberry/fozzie-dist-agent@sha256:ac1d1c36621fc7f8534bc3bb9421351d177f183fc5d0c97e94bc71a5d129b198",
+        "orchestrator": "ghcr.io/functionberry/fozzie-dist-orchestrator@sha256:76af511210637d6e93a2ad94740a43285c0f4d94b6f565c899ac84301dd02268"
+      }
+    },
     {
       "version": "0.1.3",
       "publishedAt": "2026-11-05T07:27:31.517Z",

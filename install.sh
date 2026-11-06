@@ -9,17 +9,23 @@
 # first time. Later runs just need the name -- its ports are remembered.
 #   curl -fsSL https://functionberry.github.io/fozzie-releases/install.sh | bash -s -- --name second --core-port 4010 --dashboard-port 5183
 #
+# The agent service runs by default (ADR-0215). --no-agents turns it off,
+# and later runs remember that; --with-agents turns it back on.
+#
 # Switching an instance installed from source to these images, keeping
 # its data: --import-env <its env file> takes its secrets and ports.
 # `--help` lists every option.
 #
 # What this does, in order: checks Docker and Compose; reads the latest
 # release's image refs from latest.env; logs in to ghcr.io if the images
-# need it (walking you through creating a read:packages token); writes
-# docker-compose.yml and .env (chmod 600, secrets generated once and kept)
-# into ~/fozzie or ~/fozzie-<name>; takes a backup first when it's
-# replacing an existing version; starts everything, waits for core-api to
-# be healthy and opens your browser -- on a fresh install, with the
+# need it (walking you through creating a read:packages token); pulls the
+# agent and orchestrator images when agents are on (carrying on without
+# agents if it can't); writes docker-compose.yml and .env (chmod 600,
+# secrets generated once and kept) into ~/fozzie or ~/fozzie-<name>; takes
+# a backup first when it's replacing an existing version; starts
+# everything (stopping the orchestrator if agents are off), waits for
+# core-api to be healthy, then for the orchestrator's first heartbeat when
+# agents are on, and opens your browser -- on a fresh install, with the
 # one-time setup token, so you land on "create your account".
 
 set -euo pipefail
@@ -72,6 +78,67 @@ version_at_least() {
   fi
 }
 
+# Reads an orchestrator's first heartbeat out of its logs -- the wait both
+# installers do after starting it: ./install.sh --with-agents (sourced via
+# scripts/lib/install_agents.sh) and the release installer,
+# release/install.sh (inlined via release/lib/install_lib.sh). Pure: no
+# docker calls, the caller hands in `docker compose logs orchestrator`
+# output. Sources nothing itself, so release_inline has nothing more to
+# follow. Safe under `set -euo pipefail`, and Bash 3.2 safe (both
+# installers run on macOS's /bin/bash).
+
+# Same literal loop.sh logs on the first heartbeat core-api accepts --
+# HEARTBEAT_OK_LINE in docker/orchestrator/lib.sh. scripts/test.sh asserts
+# the two match, so a reword there fails here first.
+INSTALL_AGENTS_HEARTBEAT_OK_LINE="Heartbeat OK -- core-api is receiving this orchestrator's status."
+
+# Given `docker compose logs orchestrator` output from a freshly
+# (re)created orchestrator, echoes:
+#   refused  -- loop.sh rejected AGENT_IDENTITIES ("refusing to start");
+#               under restart: unless-stopped it repeats, so it wins
+#   ok       -- the last heartbeat outcome logged was a success: the
+#               first-success line, or "is getting through again" (loop.sh
+#               logs the first-success line only on unknown -> ok, so a
+#               first failure then a recovery never shows it)
+#   failing  -- the last heartbeat outcome logged was "failing (HTTP ...)"
+#   off      -- the startup line says heartbeats are off
+#   pending  -- none of the above yet
+orchestrator_wait_state() {
+  local logs="$1" last
+  case "$logs" in
+    *"refusing to start"*)
+      echo refused
+      return 0
+      ;;
+  esac
+  last="$(printf '%s\n' "$logs" \
+    | grep -F -e "$INSTALL_AGENTS_HEARTBEAT_OK_LINE" -e "is getting through again" -e "failing (HTTP" \
+    | tail -n 1 || true)"
+  case "$last" in
+    *"failing (HTTP"*)
+      echo failing
+      return 0
+      ;;
+    ?*)
+      echo ok
+      return 0
+      ;;
+  esac
+  case "$logs" in
+    *"Heartbeats: off"*) echo off ;;
+    *) echo pending ;;
+  esac
+  return 0
+}
+
+# Echoes the HTTP code from the last "Heartbeat to ... failing (HTTP <code>)"
+# line in LOGS ("none" when core-api couldn't be reached at all), or
+# nothing.
+orchestrator_heartbeat_failure_code() {
+  printf '%s\n' "$1" | sed -n 's/.*failing (HTTP \([^)]*\)).*/\1/p' | tail -n 1 || true
+  return 0
+}
+
 # Character classes are spelled out rather than written as ranges, so no
 # locale can widen them (in some, [A-Z] also matches lowercase letters).
 INSTALL_UPPER='ABCDEFGHIJKLMNOPQRSTUVWXYZ'
@@ -102,7 +169,7 @@ INSTALL_GHCR_TOKEN_REGEX="^[${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}_]+
 INSTALL_ENV_VALUE_REGEX="^[${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}+/=._:@-]+\$"
 
 # The keys install_merge_env owns, in the order it appends them.
-INSTALL_MANAGED_KEYS="FOZZIE_VERSION FOZZIE_CORE_API_IMAGE FOZZIE_DASHBOARD_IMAGE FOZZIE_UPDATER_IMAGE POSTGRES_PASSWORD FOZZIE_ENCRYPTION_KEY FOZZIE_UPDATER_TOKEN CORE_API_PORT DASHBOARD_PORT GHCR_USERNAME GHCR_TOKEN COMPOSE_PROJECT FOZZIE_INSTALL_DIR"
+INSTALL_MANAGED_KEYS="FOZZIE_VERSION FOZZIE_CORE_API_IMAGE FOZZIE_DASHBOARD_IMAGE FOZZIE_UPDATER_IMAGE POSTGRES_PASSWORD FOZZIE_ENCRYPTION_KEY FOZZIE_UPDATER_TOKEN CORE_API_PORT DASHBOARD_PORT GHCR_USERNAME GHCR_TOKEN COMPOSE_PROJECT FOZZIE_INSTALL_DIR FOZZIE_AGENT_IMAGE FOZZIE_ORCHESTRATOR_IMAGE FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET FOZZIE_INSTANCE_NAME FOZZIE_AGENTS_ENABLED COMPOSE_PROFILES"
 
 INSTALL_ENV_HEADER="# Managed by the Fozzie installer: it rewrites the keys it manages on every run and keeps every other line. Holds secrets -- keep it private."
 
@@ -131,6 +198,9 @@ Options:
   --import-env FILE       Take POSTGRES_PASSWORD, FOZZIE_ENCRYPTION_KEY and the
                           ports from FILE, to switch an instance installed
                           from source to these images while keeping its data.
+  --no-agents             Don't run the agent service (it's on by default).
+                          Remembered: later runs keep it off.
+  --with-agents           Turn the agent service back on after --no-agents.
   --yes, -y               Don't ask for confirmation.
   --help, -h              Show this help.
 
@@ -184,10 +254,12 @@ install_default_dir() {
 
 # Parses install.sh's arguments into INSTALL_NAME, INSTALL_PROJECT,
 # INSTALL_DIR, INSTALL_CORE_PORT, INSTALL_DASHBOARD_PORT,
-# INSTALL_IMPORT_ENV, INSTALL_YES and INSTALL_HELP (true/false). Takes
-# both "--flag value" and "--flag=value". An unknown flag, a missing value
-# or an invalid name or port prints why and the usage to stderr and
-# returns 1. INSTALL_DIR defaults from $HOME.
+# INSTALL_IMPORT_ENV, INSTALL_YES and INSTALL_HELP (true/false) and
+# INSTALL_AGENTS (on for --with-agents, off for --no-agents, "" for
+# neither). Takes both "--flag value" and "--flag=value". An unknown flag,
+# a missing value, an invalid name or port, or both agent flags at once
+# prints why and the usage to stderr and returns 1. INSTALL_DIR defaults
+# from $HOME.
 install_parse_args() {
   local flag value
   INSTALL_NAME=local
@@ -198,6 +270,8 @@ install_parse_args() {
   INSTALL_IMPORT_ENV=""
   INSTALL_YES=false
   INSTALL_HELP=false
+  INSTALL_AGENTS=""
+  local agent_flag=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --help | -h)
@@ -207,6 +281,21 @@ install_parse_args() {
         ;;
       --yes | -y)
         INSTALL_YES=true
+        shift
+        continue
+        ;;
+      --no-agents | --with-agents)
+        if [ -n "$agent_flag" ] && [ "$agent_flag" != "$1" ]; then
+          printf '%s and %s contradict each other -- pick one.\n\n' "$agent_flag" "$1" >&2
+          install_usage >&2
+          return 1
+        fi
+        agent_flag="$1"
+        if [ "$1" = --no-agents ]; then
+          INSTALL_AGENTS=off
+        else
+          INSTALL_AGENTS=on
+        fi
         shift
         continue
         ;;
@@ -290,7 +379,33 @@ install_needs_ports() {
   [ -z "$core" ] || [ -z "$dash" ]
 }
 
-# The image-ref regex for one service (core-api, dashboard or updater):
+# Echoes true or false: whether this install should run the agent service.
+# FLAG is INSTALL_AGENTS (on, off or ""): a flag wins. Otherwise the
+# choice remembered in EXISTING_ENV's FOZZIE_AGENTS_ENABLED (exactly true
+# or false) stands, and with neither it's true -- agents are on by
+# default, including on an install from before they existed. Always
+# returns 0.
+#   install_agents_wanted EXISTING_ENV FLAG
+install_agents_wanted() {
+  case "$2" in
+    on)
+      echo true
+      return 0
+      ;;
+    off)
+      echo false
+      return 0
+      ;;
+  esac
+  case "$(install_env_get "$1" FOZZIE_AGENTS_ENABLED)" in
+    false) echo false ;;
+    *) echo true ;;
+  esac
+  return 0
+}
+
+# The image-ref regex for one service (core-api, dashboard, updater, agent
+# or orchestrator):
 # the same pin-by-digest shape release.ts requires.
 install_image_regex() {
   printf '^ghcr\\.io/functionberry/fozzie-dist-%s@sha256:[0123456789abcdef]{64}$\n' "$1"
@@ -303,17 +418,22 @@ install_image_regex() {
 # digest ref. All four of FOZZIE_VERSION, FOZZIE_CORE_API_IMAGE,
 # FOZZIE_DASHBOARD_IMAGE and FOZZIE_UPDATER_IMAGE are required: the
 # release compose file runs the updater (manifest schema 1 itself still
-# allows a release without one).
+# allows a release without one). FOZZIE_AGENT_IMAGE and
+# FOZZIE_ORCHESTRATOR_IMAGE are optional: releases before they were
+# published, and edge releases, don't have them.
 # On success sets LATEST_VERSION, LATEST_CORE_API_IMAGE,
-# LATEST_DASHBOARD_IMAGE and LATEST_UPDATER_IMAGE; on failure leaves them
-# empty, echoes why to stderr and returns 1.
+# LATEST_DASHBOARD_IMAGE, LATEST_UPDATER_IMAGE, LATEST_AGENT_IMAGE and
+# LATEST_ORCHESTRATOR_IMAGE (the last two empty when absent); on failure
+# leaves them all empty, echoes why to stderr and returns 1.
 install_parse_latest_env() {
   local input="$1" text line key value re seen=" " n=0
-  local version="" core="" dashboard="" updater=""
+  local version="" core="" dashboard="" updater="" agent="" orchestrator=""
   LATEST_VERSION=""
   LATEST_CORE_API_IMAGE=""
   LATEST_DASHBOARD_IMAGE=""
   LATEST_UPDATER_IMAGE=""
+  LATEST_AGENT_IMAGE=""
+  LATEST_ORCHESTRATOR_IMAGE=""
   if [ -f "$input" ]; then
     text="$(cat "$input")" || return 1
   else
@@ -352,6 +472,14 @@ install_parse_latest_env() {
         re="$(install_image_regex updater)"
         updater="$value"
         ;;
+      FOZZIE_AGENT_IMAGE)
+        re="$(install_image_regex agent)"
+        agent="$value"
+        ;;
+      FOZZIE_ORCHESTRATOR_IMAGE)
+        re="$(install_image_regex orchestrator)"
+        orchestrator="$value"
+        ;;
       *)
         printf 'latest.env has an unknown key %s\n' "$key" >&2
         return 1
@@ -375,6 +503,8 @@ install_parse_latest_env() {
   LATEST_CORE_API_IMAGE="$core"
   LATEST_DASHBOARD_IMAGE="$dashboard"
   LATEST_UPDATER_IMAGE="$updater"
+  LATEST_AGENT_IMAGE="$agent"
+  LATEST_ORCHESTRATOR_IMAGE="$orchestrator"
   return 0
 }
 
@@ -426,6 +556,12 @@ install_managed_value() {
     GHCR_TOKEN) printf '%s\n' "$m_GHCR_TOKEN" ;;
     COMPOSE_PROJECT) printf '%s\n' "$m_COMPOSE_PROJECT" ;;
     FOZZIE_INSTALL_DIR) printf '%s\n' "$m_FOZZIE_INSTALL_DIR" ;;
+    FOZZIE_AGENT_IMAGE) printf '%s\n' "$m_FOZZIE_AGENT_IMAGE" ;;
+    FOZZIE_ORCHESTRATOR_IMAGE) printf '%s\n' "$m_FOZZIE_ORCHESTRATOR_IMAGE" ;;
+    FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET) printf '%s\n' "$m_FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET" ;;
+    FOZZIE_INSTANCE_NAME) printf '%s\n' "$m_FOZZIE_INSTANCE_NAME" ;;
+    FOZZIE_AGENTS_ENABLED) printf '%s\n' "$m_FOZZIE_AGENTS_ENABLED" ;;
+    COMPOSE_PROFILES) printf '%s\n' "$m_COMPOSE_PROFILES" ;;
   esac
 }
 
@@ -435,29 +571,46 @@ install_managed_value() {
 # any managed key it didn't have appended. A managed key with no value is
 # left out. Precedence, per key:
 #   POSTGRES_PASSWORD, FOZZIE_ENCRYPTION_KEY: import, existing, candidate;
-#   FOZZIE_UPDATER_TOKEN: existing, candidate;
+#   FOZZIE_UPDATER_TOKEN, FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET: existing,
+#     candidate (never rotated: core-api and the orchestrator share it);
 #   CORE_API_PORT, DASHBOARD_PORT: flag, import, existing, 4000/5173;
-#   FOZZIE_VERSION, FOZZIE_*_IMAGE: always LATEST_* (install_parse_latest_env);
+#   FOZZIE_VERSION, FOZZIE_*_IMAGE: always LATEST_* (install_parse_latest_env),
+#     so a release without the agent or orchestrator image drops its line;
 #   GHCR_USERNAME, GHCR_TOKEN: the newly entered value, existing;
-#   COMPOSE_PROJECT, FOZZIE_INSTALL_DIR (for the updater): always this
-#     run's PROJECT and absolute DIR, never kept from the existing file.
+#   COMPOSE_PROJECT, FOZZIE_INSTALL_DIR (for the updater), and
+#     FOZZIE_INSTANCE_NAME: always this run's PROJECT, absolute DIR and
+#     NAME, never kept from the existing file;
+#   FOZZIE_AGENTS_ENABLED: the remembered choice, install_agents_wanted
+#     EXISTING FLAG_AGENTS (true or false);
+#   COMPOSE_PROFILES: "agents" when that's true and AGENTS_AVAILABLE is
+#     true, otherwise left out, so the orchestrator's profile is off. A
+#     run that can't have agents (AGENTS_AVAILABLE false: the release has
+#     no agent images, or pulling them failed) doesn't write
+#     FOZZIE_AGENTS_ENABLED=false, so the next release that can turns
+#     them back on.
 # The candidates are generated by the caller, so this stays deterministic.
 # Either file may be "" or missing. Returns 1, echoing why to stderr, when
 # a required value is missing or a value isn't safe to write unquoted.
 #   install_merge_env EXISTING IMPORT FLAG_CORE_PORT FLAG_DASHBOARD_PORT \
 #     NEW_GHCR_USERNAME NEW_GHCR_TOKEN CANDIDATE_PASSWORD CANDIDATE_KEY \
-#     CANDIDATE_UPDATER_TOKEN PROJECT DIR
+#     CANDIDATE_UPDATER_TOKEN PROJECT DIR CANDIDATE_HEARTBEAT_SECRET NAME \
+#     FLAG_AGENTS AGENTS_AVAILABLE
 install_merge_env() {
   local existing="$1" import="$2" flag_core="$3" flag_dash="$4"
   local new_user="$5" new_token="$6" cand_password="$7" cand_key="$8" cand_updater="$9"
   local m_COMPOSE_PROJECT="${10:-}" m_FOZZIE_INSTALL_DIR="${11:-}"
+  local cand_heartbeat="${12:-}" m_FOZZIE_INSTANCE_NAME="${13:-}"
+  local flag_agents="${14:-}" agents_available="${15:-false}"
   local key value line emitted=" "
   local m_FOZZIE_VERSION="$LATEST_VERSION"
   local m_FOZZIE_CORE_API_IMAGE="$LATEST_CORE_API_IMAGE"
   local m_FOZZIE_DASHBOARD_IMAGE="$LATEST_DASHBOARD_IMAGE"
   local m_FOZZIE_UPDATER_IMAGE="$LATEST_UPDATER_IMAGE"
+  local m_FOZZIE_AGENT_IMAGE="$LATEST_AGENT_IMAGE"
+  local m_FOZZIE_ORCHESTRATOR_IMAGE="$LATEST_ORCHESTRATOR_IMAGE"
   local m_POSTGRES_PASSWORD m_FOZZIE_ENCRYPTION_KEY m_FOZZIE_UPDATER_TOKEN
   local m_CORE_API_PORT m_DASHBOARD_PORT m_GHCR_USERNAME m_GHCR_TOKEN
+  local m_FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET m_FOZZIE_AGENTS_ENABLED m_COMPOSE_PROFILES=""
 
   m_POSTGRES_PASSWORD="$(install_env_get "$import" POSTGRES_PASSWORD)"
   [ -n "$m_POSTGRES_PASSWORD" ] || m_POSTGRES_PASSWORD="$(install_env_get "$existing" POSTGRES_PASSWORD)"
@@ -469,6 +622,14 @@ install_merge_env() {
 
   m_FOZZIE_UPDATER_TOKEN="$(install_env_get "$existing" FOZZIE_UPDATER_TOKEN)"
   [ -n "$m_FOZZIE_UPDATER_TOKEN" ] || m_FOZZIE_UPDATER_TOKEN="$cand_updater"
+
+  m_FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET="$(install_env_get "$existing" FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET)"
+  [ -n "$m_FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET" ] || m_FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET="$cand_heartbeat"
+
+  m_FOZZIE_AGENTS_ENABLED="$(install_agents_wanted "$existing" "$flag_agents")"
+  if [ "$m_FOZZIE_AGENTS_ENABLED" = true ] && [ "$agents_available" = true ]; then
+    m_COMPOSE_PROFILES=agents
+  fi
 
   m_CORE_API_PORT="$flag_core"
   [ -n "$m_CORE_API_PORT" ] || m_CORE_API_PORT="$(install_env_get "$import" CORE_API_PORT)"
@@ -485,7 +646,7 @@ install_merge_env() {
   m_GHCR_TOKEN="$new_token"
   [ -n "$m_GHCR_TOKEN" ] || m_GHCR_TOKEN="$(install_env_get "$existing" GHCR_TOKEN)"
 
-  for key in FOZZIE_VERSION FOZZIE_CORE_API_IMAGE FOZZIE_DASHBOARD_IMAGE FOZZIE_UPDATER_IMAGE POSTGRES_PASSWORD FOZZIE_ENCRYPTION_KEY FOZZIE_UPDATER_TOKEN COMPOSE_PROJECT FOZZIE_INSTALL_DIR; do
+  for key in FOZZIE_VERSION FOZZIE_CORE_API_IMAGE FOZZIE_DASHBOARD_IMAGE FOZZIE_UPDATER_IMAGE POSTGRES_PASSWORD FOZZIE_ENCRYPTION_KEY FOZZIE_UPDATER_TOKEN FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET COMPOSE_PROJECT FOZZIE_INSTALL_DIR; do
     value="$(install_managed_value "$key")"
     if [ -z "$value" ]; then
       printf 'No value for %s\n' "$key" >&2
@@ -634,6 +795,10 @@ FOZZIE_RELEASES_URL="${FOZZIE_RELEASES_URL%/}"
 # tests can make sure there's no terminal.
 TTY="${FOZZIE_INSTALL_TTY:-/dev/tty}"
 
+# How many times (3s apart) to check for the orchestrator's first
+# heartbeat. Overridable only so the tests needn't wait 90s.
+ORCH_WAIT_TRIES="${FOZZIE_INSTALL_ORCH_WAIT_TRIES:-30}"
+
 log() { printf '\n==> %s\n' "$1"; }
 
 die() {
@@ -741,6 +906,31 @@ pull_core() {
   fi
   PULL_OUTPUT="$(cat "$WORK/pull.log")"
   return 1
+}
+
+# pull_agent_images: pulls the agent, orchestrator and agent test
+# database images. The agent image isn't a compose service, so `compose
+# pull` never fetches it, and the orchestrator can't log in to ghcr.io to
+# pull it itself. Leaves the failing pull's output in PULL_OUTPUT.
+pull_agent_images() {
+  local image
+  for image in "$LATEST_AGENT_IMAGE" "$LATEST_ORCHESTRATOR_IMAGE" postgres:16; do
+    echo "Pulling $image"
+    if ! docker pull "$image" </dev/null >"$WORK/pull-agents.log" 2>&1; then
+      PULL_OUTPUT="$(cat "$WORK/pull-agents.log")"
+      return 1
+    fi
+  done
+  PULL_OUTPUT=""
+  return 0
+}
+
+# orchestrator_running: true iff this project's orchestrator container is
+# running.
+orchestrator_running() {
+  local cid
+  cid="$(dc ps -q orchestrator 2>/dev/null || true)"
+  [ -n "$cid" ] && [ "$(docker inspect -f '{{.State.Running}}' "$cid" </dev/null 2>/dev/null || true)" = "true" ]
 }
 
 main() {
@@ -907,6 +1097,33 @@ main() {
     fi
   fi
 
+  # --- 4b. The agent service's images ---------------------------------
+
+  # Decided before .env is merged, from the flag and the existing .env, so
+  # a failed pull can turn agents off for this run (AGENTS_AVAILABLE) while
+  # the remembered choice stays as it was.
+  AGENTS_WANTED="$(install_agents_wanted "$ENV_FILE" "$INSTALL_AGENTS")"
+  AGENTS_AVAILABLE=false
+  AGENTS_SKIPPED=""
+  if [ "$AGENTS_WANTED" = true ]; then
+    if [ -z "$LATEST_AGENT_IMAGE" ] || [ -z "$LATEST_ORCHESTRATOR_IMAGE" ]; then
+      AGENTS_SKIPPED=release
+      echo "This release doesn't include the agent service -- agents are off for now."
+    else
+      log "Downloading the agent service"
+      if pull_agent_images; then
+        AGENTS_AVAILABLE=true
+      else
+        AGENTS_SKIPPED=pull
+        echo
+        echo "Warning: couldn't download the agent service, so agents are off for now:"
+        install_docker_error_message pull-auth "$PULL_OUTPUT" "${NEW_GHCR_USERNAME:-$existing_user}"
+        echo "If you haven't yet, accept the fozzie-dist-agent and fozzie-dist-orchestrator"
+        echo "invites, then re-run this installer. Carrying on without agents."
+      fi
+    fi
+  fi
+
   # --- 5. Existing data? -----------------------------------------------
 
   # Data, not .env, is what makes this an existing instance: one installed
@@ -941,7 +1158,7 @@ main() {
   merged="$(install_merge_env "$ENV_FILE" "$IMPORT_ENV" "$INSTALL_CORE_PORT" "$INSTALL_DASHBOARD_PORT" \
     "$NEW_GHCR_USERNAME" "$NEW_GHCR_TOKEN" \
     "$(openssl rand -hex 24)" "$(openssl rand -base64 32)" "$(openssl rand -hex 32)" \
-    "$PROJECT" "$DIR")" ||
+    "$PROJECT" "$DIR" "$(openssl rand -hex 32)" "$NAME" "$INSTALL_AGENTS" "$AGENTS_AVAILABLE")" ||
     die "Couldn't write $ENV_FILE."
   # Hex for new installs (see install_url_safe_password); this catches one
   # made by 0.1.0's installer, whose password can never work. Its database
@@ -988,7 +1205,19 @@ main() {
   # --- 8. Start ----------------------------------------------------------
 
   log "Starting Fozzie instance \"$NAME\""
+  # COMPOSE_PROFILES in .env decides whether this starts the orchestrator.
   dc up -d
+  local agents_on=false
+  if [ "$(install_env_get "$ENV_FILE" COMPOSE_PROFILES)" = agents ]; then
+    agents_on=true
+  else
+    # `up -d` with the profile off leaves an orchestrator that's already
+    # running alone, so stop it. `stop`, not `rm`: with restart:
+    # unless-stopped a stopped container stays stopped across Docker
+    # restarts. Agent containers already running finish their task. A
+    # no-op when there isn't one.
+    dc --profile agents stop orchestrator >/dev/null 2>&1 || true
+  fi
 
   # --- 9. Wait for core-api ---------------------------------------------
 
@@ -1004,6 +1233,64 @@ main() {
   if [ "$ready" != true ]; then
     die "core-api didn't become healthy within 3 minutes. Check its logs for what went wrong:" \
       "  cd \"$DIR\" && docker compose -p $PROJECT --env-file .env logs core-api"
+  fi
+
+  # --- 9b. Agents on: wait for the orchestrator's first heartbeat ------
+
+  local dc_cmd
+  dc_cmd="cd \"$DIR\" && docker compose -p $PROJECT --env-file .env"
+  if [ "$agents_on" = true ]; then
+    log "Waiting for the agent service to report to Fozzie"
+    # The orchestrator started in the same `up -d` as core-api, so its
+    # first heartbeats can fail while core-api migrates: a failing state
+    # isn't final here, unlike ./install.sh's wait. It keeps retrying, and
+    # logs "is getting through again" once one does.
+    local orch_state=pending orch_logs="" tries=0 code
+    while :; do
+      tries=$((tries + 1))
+      orch_logs="$(dc logs --no-color orchestrator 2>&1 || true)"
+      orch_state="$(orchestrator_wait_state "$orch_logs")"
+      case "$orch_state" in
+        ok | refused | off) break ;;
+      esac
+      [ "$tries" -lt "$ORCH_WAIT_TRIES" ] || break
+      sleep 3
+    done
+    case "$orch_state" in
+      ok)
+        echo "Agents are on: the orchestrator is running and reporting to Fozzie."
+        ;;
+      *)
+        case "$orch_state" in
+          failing)
+            code="$(orchestrator_heartbeat_failure_code "$orch_logs")"
+            echo "Warning: the orchestrator's heartbeat to core-api is failing (HTTP ${code:-?}),"
+            echo "so Fozzie shows the agent service as not running."
+            case "$code" in
+              404) echo "core-api didn't get FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET -- re-run the installer to recreate it." ;;
+              401) echo "The orchestrator's and core-api's heartbeat secrets differ -- re-run the installer to recreate both." ;;
+              000 | none) echo "The orchestrator can't reach core-api at all." ;;
+            esac
+            ;;
+          off)
+            echo "Warning: the orchestrator started with heartbeats off, so Fozzie can't show it as running."
+            ;;
+          pending)
+            echo "Warning: the orchestrator hasn't reported to core-api yet (waited $((ORCH_WAIT_TRIES * 3))s)."
+            ;;
+          *)
+            echo "Warning: the orchestrator didn't start properly."
+            ;;
+        esac
+        echo "Check its logs:"
+        echo "  $dc_cmd logs orchestrator"
+        # core-api is up, so a slow or failing heartbeat isn't a failed
+        # install -- only an orchestrator that isn't running is.
+        if ! orchestrator_running; then
+          die "The orchestrator container isn't running."
+        fi
+        ;;
+    esac
   fi
 
   # --- 10. Fresh install only: hand the setup token to the browser -----
@@ -1027,12 +1314,11 @@ main() {
 
   # --- 11. Open the browser, and how to run it from here -----------------
 
-  local update_args="" dc_cmd
+  local update_args=""
   [ "$NAME" = local ] || update_args=" --name $NAME"
   if [ "$DIR" != "$(install_default_dir "$NAME" "${HOME:-}")" ]; then
     update_args="$update_args --dir $DIR"
   fi
-  dc_cmd="cd \"$DIR\" && docker compose -p $PROJECT --env-file .env"
 
   log "Fozzie $LATEST_VERSION (instance \"$NAME\") is running at http://localhost:$DASHBOARD_PORT"
   echo
@@ -1046,6 +1332,18 @@ main() {
   echo "List backups:  $dc_cmd run --rm backup node dist/backupCli.js list"
   echo "Uninstall:     $dc_cmd down     (keeps your data)"
   echo "               $dc_cmd down -v  (DELETES ALL DATA, permanently)"
+  echo
+  if [ "$agents_on" = true ]; then
+    echo "Agents are on: create one in Agents → Set up an agent"
+    echo "Turn agents off:  curl -fsSL $FOZZIE_RELEASES_URL/install.sh | bash -s --$update_args --no-agents"
+  elif [ "$AGENTS_SKIPPED" = release ]; then
+    echo "Agents are off: this release doesn't include the agent service yet."
+  elif [ "$AGENTS_SKIPPED" = pull ]; then
+    echo "Agents are off for now: the agent service couldn't be downloaded (see above)."
+    echo "Re-run the installer once that's sorted out."
+  else
+    echo "Agents are off. Turn them on:  curl -fsSL $FOZZIE_RELEASES_URL/install.sh | bash -s --$update_args --with-agents"
+  fi
   echo
 
   if command -v open >/dev/null 2>&1; then

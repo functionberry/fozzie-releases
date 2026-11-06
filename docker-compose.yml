@@ -13,6 +13,13 @@
 # core-api, dashboard and backup in place. Every port binds to the host's
 # own loopback interface only.
 #
+# The orchestrator, which runs the agents created in the app (ADR-0215),
+# is in the "agents" profile. install.sh turns it on by default by
+# writing COMPOSE_PROFILES=agents into .env, which Compose reads from
+# --env-file like any other value; `--no-agents` drops that line (and
+# remembers the choice), so the orchestrator isn't started. Every other
+# service runs either way.
+#
 # The volume keys match the source-built local install's (ADR-0143), so
 # an instance installed that way can switch to these images and keep its
 # data: under the same `-p` project name the volumes resolve to the same
@@ -92,6 +99,31 @@ services:
       FOZZIE_REPO_IMPORT_TIMEOUT_SECONDS: ${FOZZIE_REPO_IMPORT_TIMEOUT_SECONDS:-}
       FOZZIE_REPO_IMPORT_MAX_CONCURRENT: ${FOZZIE_REPO_IMPORT_MAX_CONCURRENT:-}
       FOZZIE_REPO_IMPORT_ALLOW_PRIVATE_NETWORKS: ${FOZZIE_REPO_IMPORT_ALLOW_PRIVATE_NETWORKS:-}
+      # Lets the orchestrator below post its heartbeat (ADR-0201), so the
+      # app can show whether the agent service is running. install.sh
+      # generates it once, agents on or off, and hands the same value to
+      # the orchestrator. `:-`, not `:?`, so an older .env still loads
+      # (the agent service just reports not configured) until the
+      # installer is re-run.
+      FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET: ${FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET:-}
+      # Installer instances only (ADR-0204, ADR-0215): core-api writes each
+      # agent's credentials file (<slug>.env) into this volume itself, and
+      # the orchestrator discovers the agents that have one. It holds agent
+      # tokens at rest (dir 0700, files 0600, owned by the agent image's
+      # uid 1000). `docker volume rm fozzie-<name>_fozzie_agent_secrets_local`
+      # wipes it and un-delivers every agent. The orchestrator's baked-in
+      # dispatch file mounts this exact volume key read-only into each
+      # agent container, so don't rename it.
+      FOZZIE_AGENT_SECRETS_DIR: /data/agent-secrets
+      # The instance's name (ADR-0207), so the guided agent setup can say
+      # how to re-run the installer for it. install.sh writes it. core-api
+      # validates it against the Compose project-name rule and ignores
+      # anything else.
+      FOZZIE_INSTANCE_NAME: ${FOZZIE_INSTANCE_NAME:-}
+      # Which installer made this instance: the release one, as opposed to
+      # ./install.sh from a checkout. The two turn agents on with different
+      # commands, and this is how the app will tell which to show.
+      FOZZIE_INSTALL_KIND: release
     depends_on:
       postgres:
         condition: service_healthy
@@ -106,6 +138,7 @@ services:
     volumes:
       - fozzie_git_repos_local:/data/git-repos
       - fozzie_attachments_local:/data/attachments
+      - fozzie_agent_secrets_local:/data/agent-secrets
     restart: unless-stopped
 
   dashboard:
@@ -184,6 +217,68 @@ services:
       - core-api
     restart: unless-stopped
 
+  # The agent service (ADR-0033, ADR-0215): polls core-api for ready work
+  # and runs each agent created in the app as its own container, through
+  # the Docker socket, like the updater above. It holds no Fozzie
+  # credential -- only the heartbeat secret, valid on the heartbeat and
+  # agent-discovery routes alone (ADR-0201, ADR-0204) -- and has no port,
+  # no secrets volume and no mount of the install directory. Each agent
+  # container loads its own credentials from fozzie_agent_secrets_local.
+  #
+  # What it dispatches is baked into its image, since there's no checkout
+  # here: /orchestrator/release-dispatch/docker/docker-compose.agents.yml
+  # (docker/orchestrator/release-dispatch/ in the repo), image-only, with
+  # no build and no host bind mount. install.sh pulls the agent image on
+  # the host first: the orchestrator can't log in to ghcr.io.
+  #
+  # Only in the "agents" profile (COMPOSE_PROFILES=agents in .env).
+  # The image has a placeholder default rather than `:?` because Compose
+  # checks every service's interpolation, profiled out or not: with `:?`,
+  # an install without agents (a release with no orchestrator image) would
+  # fail every compose command, the updater's included -- and an empty
+  # image fails too ("has neither an image nor a build context"). The
+  # placeholder is never pulled or run: install.sh only turns the profile
+  # on when .env has the real image.
+  orchestrator:
+    image: ${FOZZIE_ORCHESTRATOR_IMAGE:-fozzie-orchestrator-not-in-this-release}
+    profiles: ["agents"]
+    environment:
+      CORE_GRAPHQL_URL: http://core-api:4000/graphql
+      # Shared with core-api above (ADR-0201).
+      FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET: ${FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET:?Run install.sh -- it sets FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET in .env}
+      # loop.sh passes this as `-p` on dispatch, so agents join this
+      # instance's network (and volumes) alongside core-api.
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT:?Run install.sh -- it sets COMPOSE_PROJECT in .env}
+      # Agents are created in the app and discovered from core-api
+      # (ADR-0204); there are no hand-listed identities and no host env
+      # files here.
+      AGENT_DISCOVERY: "true"
+      AGENT_IDENTITIES: ""
+      AGENT_ENV_FILE: ""
+      # The baked-in dispatch file (see above). loop.sh runs
+      # `cd $REPO_MOUNT/docker` and passes each AGENT_COMPOSE_FILES as -f.
+      REPO_MOUNT: /orchestrator/release-dispatch
+      AGENT_COMPOSE_FILES: docker-compose.agents.yml
+      # Not used by the orchestrator itself: the dispatch file
+      # interpolates these when it runs an agent, so they have to be in
+      # this environment.
+      FOZZIE_AGENT_IMAGE: ${FOZZIE_AGENT_IMAGE:-}
+      FOZZIE_API_RETRY_SECONDS: ${FOZZIE_API_RETRY_SECONDS:-300}
+      # No UI runner on tester installs (UI tests gate on warn), so no
+      # Playwright pre-pull either.
+      UI_RUNNER_PARTICIPANT_ID: ""
+      MAX_CONCURRENT_AGENTS: ${MAX_CONCURRENT_AGENTS:-1}
+      POLL_INTERVAL_SECONDS: "20"
+      # ADR-0148: pause an agent once its Claude subscription window
+      # reaches this percentage, leaving headroom for interactive use.
+      RATE_LIMIT_PAUSE_AT_FIVE_HOUR: "80"
+      RATE_LIMIT_PAUSE_AT_WEEKLY: "85"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - core-api
+    restart: unless-stopped
+
 volumes:
   fozzie_pg_local_data:
   fozzie_git_repos_local:
@@ -191,3 +286,9 @@ volumes:
   fozzie_backups_local:
   # The updater's run.json and report queue, so a restart resumes a run.
   fozzie_updater_state:
+  # Each agent's credentials (written by core-api) and npm's download
+  # cache for agent runs. Both keys must stay identical to the orchestrator
+  # image's dispatch file's (and docker/docker-compose.local.yml's), so they
+  # resolve to the same <project>_... volumes.
+  fozzie_agent_secrets_local:
+  fozzie_npm_cache:
