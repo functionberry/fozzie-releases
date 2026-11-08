@@ -16,7 +16,13 @@
 # its data: --import-env <its env file> takes its secrets and ports.
 # `--help` lists every option.
 #
-# What this does, in order: checks Docker and Compose; reads the latest
+# Removing an instance: --uninstall asks whether to keep its data (and
+# the .env it needs) or delete everything.
+#
+# What this does, in order: checks Docker and Compose; checks that an
+# existing instance's data opens with this .env's database password (if
+# it doesn't, refuses, or offers to keep the data or start fresh, rather
+# than generate a new password over it); reads the latest
 # release's image refs from latest.env; logs in to ghcr.io if the images
 # need it (walking you through creating a read:packages token); pulls the
 # agent and orchestrator images when agents are on (carrying on without
@@ -201,6 +207,9 @@ Options:
   --no-agents             Don't run the agent service (it's on by default).
                           Remembered: later runs keep it off.
   --with-agents           Turn the agent service back on after --no-agents.
+  --uninstall             Remove this instance: asks whether to keep its data
+                          (and .env, which that data needs) or delete
+                          everything. Needs a terminal; --yes doesn't skip it.
   --yes, -y               Don't ask for confirmation.
   --help, -h              Show this help.
 
@@ -254,7 +263,8 @@ install_default_dir() {
 
 # Parses install.sh's arguments into INSTALL_NAME, INSTALL_PROJECT,
 # INSTALL_DIR, INSTALL_CORE_PORT, INSTALL_DASHBOARD_PORT,
-# INSTALL_IMPORT_ENV, INSTALL_YES and INSTALL_HELP (true/false) and
+# INSTALL_IMPORT_ENV, INSTALL_YES, INSTALL_HELP and INSTALL_UNINSTALL
+# (true/false) and
 # INSTALL_AGENTS (on for --with-agents, off for --no-agents, "" for
 # neither). Takes both "--flag value" and "--flag=value". An unknown flag,
 # a missing value, an invalid name or port, or both agent flags at once
@@ -270,6 +280,7 @@ install_parse_args() {
   INSTALL_IMPORT_ENV=""
   INSTALL_YES=false
   INSTALL_HELP=false
+  INSTALL_UNINSTALL=false
   INSTALL_AGENTS=""
   local agent_flag=""
   while [ "$#" -gt 0 ]; do
@@ -281,6 +292,11 @@ install_parse_args() {
         ;;
       --yes | -y)
         INSTALL_YES=true
+        shift
+        continue
+        ;;
+      --uninstall)
+        INSTALL_UNINSTALL=true
         shift
         continue
         ;;
@@ -788,12 +804,90 @@ install_docker_error_message() {
   esac
 }
 
+# install_lower TEXT: TEXT in lowercase (bash 3.2 has no ${var,,}).
+install_lower() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+# Classifies a database password check -- psql run over TCP against the
+# instance's existing database, given its exit code and combined output.
+# Echoes match (it connected), mismatch (postgres refused the password)
+# or unknown (anything else: the container didn't start, a timeout, ...).
+#   install_db_check_result EXIT_CODE OUTPUT
+install_db_check_result() {
+  case "$(install_lower "$2")" in
+    *"password authentication failed"*)
+      echo mismatch
+      return 0
+      ;;
+  esac
+  if [ "$1" = 0 ]; then
+    echo match
+  else
+    echo unknown
+  fi
+}
+
+# What the installer found of an instance's existing data, given whether
+# its postgres volume exists (true/false), the database password this run
+# would use ("" when neither .env nor --import-env has one) and
+# install_db_check_result's verdict on it. Echoes one of:
+#   none      no data: a fresh install;
+#   ok        data, and the password opens it;
+#   no-env    data, but no password for it -- the folder or .env was
+#             removed after an uninstall that kept the data;
+#   mismatch  data, and the password isn't the one it was created with;
+#   unknown   data, and the password couldn't be checked.
+#   install_data_state HAVE_DATA PASSWORD CHECK_RESULT
+install_data_state() {
+  if [ "$1" != true ]; then
+    echo none
+  elif [ -z "$2" ]; then
+    echo no-env
+  else
+    case "$3" in
+      match) echo ok ;;
+      mismatch) echo mismatch ;;
+      *) echo unknown ;;
+    esac
+  fi
+}
+
+# Classifies a failed backup's output: auth when the database refused its
+# password (pg_dump's own error, or Prisma's P1000) -- the backup can't
+# work and nor can core-api, so carrying on without one is no answer --
+# otherwise other.
+install_backup_failure_category() {
+  case "$(install_lower "$1")" in
+    *"password authentication failed"* | *"p1000"*) echo auth ;;
+    *) echo other ;;
+  esac
+}
+
+# One line on the likely cause of core-api not becoming healthy, from
+# its logs, or nothing when they don't show one.
+install_core_api_failure_hint() {
+  case "$(install_lower "$1")" in
+    *"p1000"* | *"authentication failed against database server"* | *"password authentication failed"*)
+      echo "the database refused core-api's password: POSTGRES_PASSWORD in .env isn't the one this data was created with. Put back the .env this data was installed with (or re-run with --import-env pointing at it)."
+      ;;
+    *"invalid port number"*)
+      echo "the database password breaks core-api's DATABASE_URL -- a bug in Fozzie 0.1.0's installer. If you haven't used this instance yet, reset it: 'down -v', delete POSTGRES_PASSWORD from .env, and run the installer again."
+      ;;
+    *"p1001"* | *"can't reach database server"*)
+      echo "core-api can't reach the database: postgres isn't running or isn't healthy. Check its logs with the same command, ending in 'logs postgres'."
+      ;;
+  esac
+  return 0
+}
+
 FOZZIE_RELEASES_URL="${FOZZIE_RELEASES_URL:-https://functionberry.github.io/fozzie-releases}"
 FOZZIE_RELEASES_URL="${FOZZIE_RELEASES_URL%/}"
 
 # Where prompts are read from and written to. Overridable only so the
-# tests can make sure there's no terminal.
+# tests can make sure there's no terminal, or answer from a file.
 TTY="${FOZZIE_INSTALL_TTY:-/dev/tty}"
+TTY_OUT="${FOZZIE_INSTALL_TTY_OUT:-$TTY}"
 
 # How many times (3s apart) to check for the orchestrator's first
 # heartbeat. Overridable only so the tests needn't wait 90s.
@@ -812,20 +906,29 @@ have_tty() {
   (exec <"$TTY") 2>/dev/null
 }
 
+# Opens the terminal once, as fd 3, for ask and ask_secret to read from.
+# Once, not per prompt: they run in $(...) subshells, which share fd 3's
+# offset with this shell, so successive prompts read successive lines.
+open_tty() {
+  if have_tty; then
+    exec 3<"$TTY"
+  fi
+}
+
 # ask PROMPT: echoes the answer read from the terminal.
 ask() {
   local answer
-  printf '%s' "$1" >"$TTY"
-  IFS= read -r answer <"$TTY" || answer=""
+  printf '%s' "$1" >>"$TTY_OUT"
+  IFS= read -r answer <&3 || answer=""
   printf '%s\n' "$answer"
 }
 
 # ask_secret PROMPT: as ask, without echoing what's typed.
 ask_secret() {
   local answer
-  printf '%s' "$1" >"$TTY"
-  IFS= read -rs answer <"$TTY" || answer=""
-  printf '\n' >"$TTY"
+  printf '%s' "$1" >>"$TTY_OUT"
+  IFS= read -rs answer <&3 || answer=""
+  printf '\n' >>"$TTY_OUT"
   printf '%s\n' "$answer"
 }
 
@@ -933,6 +1036,207 @@ orchestrator_running() {
   [ -n "$cid" ] && [ "$(docker inspect -f '{{.State.Running}}' "$cid" </dev/null 2>/dev/null || true)" = "true" ]
 }
 
+# db_password_check PASSWORD: sets DB_CHECK_RESULT to
+# install_db_check_result's verdict on PASSWORD against this project's
+# existing database (not echoed: run in this shell, the EXIT trap can
+# stop its throwaway postgres). Over TCP to the
+# container's own address: postgres:16 trusts every local and loopback
+# connection, so only that route checks the password at all. A postgres
+# already running on the data is exec'd into -- a second one on the same
+# data directory could corrupt it -- otherwise a throwaway one is started
+# on it, with the data's own settings (no POSTGRES_PASSWORD needed), and
+# stopped again. The password reaches docker through its environment,
+# never its argv.
+DBCHECK_CONTAINER=""
+DB_CHECK_RESULT=""
+db_password_check() {
+  local pw="$1" volume="${PROJECT}_fozzie_pg_local_data" cid out code=0 tries=0
+  DB_CHECK_RESULT=unknown
+  cid="$(docker ps -q --filter "volume=$volume" </dev/null 2>/dev/null | head -n 1 || true)"
+  if [ -z "$cid" ]; then
+    cid="${PROJECT}-dbcheck"
+    docker rm -f "$cid" </dev/null >/dev/null 2>&1 || true
+    if ! docker run -d --rm --name "$cid" -v "$volume:/var/lib/postgresql/data" postgres:16 </dev/null >"$WORK/dbcheck.log" 2>&1; then
+      return 0
+    fi
+    DBCHECK_CONTAINER="$cid"
+    until docker exec "$cid" pg_isready -q </dev/null >/dev/null 2>&1; do
+      tries=$((tries + 1))
+      if [ "$tries" -ge 30 ]; then
+        stop_dbcheck
+        return 0
+      fi
+      sleep 1
+    done
+  fi
+  # shellcheck disable=SC2016 # expanded by the container's own shell
+  out="$(PGPASSWORD="$pw" docker exec -e PGPASSWORD "$cid" \
+    sh -c 'psql -w -h "$(hostname -i | cut -d" " -f1)" -U fozzie -d fozzie -tAc "select 1"' </dev/null 2>&1)" || code=$?
+  stop_dbcheck
+  DB_CHECK_RESULT="$(install_db_check_result "$code" "$out")"
+}
+
+# stop_dbcheck: stops db_password_check's throwaway postgres, if it
+# started one (--rm removes it). Also run on exit.
+stop_dbcheck() {
+  if [ -n "$DBCHECK_CONTAINER" ]; then
+    docker stop "$DBCHECK_CONTAINER" </dev/null >/dev/null 2>&1 || true
+    DBCHECK_CONTAINER=""
+  fi
+}
+
+# project_volumes: this Compose project's volumes, one per line. The
+# label matches the project exactly, so another instance's are never
+# listed.
+project_volumes() {
+  docker volume ls -q --filter "label=com.docker.compose.project=$PROJECT" </dev/null
+}
+
+# remove_instance_containers: removes every container (running or not)
+# and network of this Compose project, leaving its volumes alone.
+remove_instance_containers() {
+  local ids id
+  ids="$(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT" </dev/null)" ||
+    die "Couldn't list $PROJECT's containers -- nothing was deleted."
+  for id in $ids; do
+    docker rm -f "$id" </dev/null >/dev/null || die "Couldn't remove container $id of $PROJECT."
+  done
+  ids="$(docker network ls -q --filter "label=com.docker.compose.project=$PROJECT" </dev/null 2>/dev/null || true)"
+  for id in $ids; do
+    docker network rm "$id" </dev/null >/dev/null 2>&1 || true
+  done
+}
+
+# delete_instance_data: deletes this project's containers and then every
+# one of its volumes -- all its data, permanently. Only ever called after
+# confirm_delete.
+delete_instance_data() {
+  local volumes volume
+  remove_instance_containers
+  volumes="$(project_volumes)" || die "Couldn't list $PROJECT's volumes."
+  for volume in $volumes; do
+    docker volume rm "$volume" </dev/null >/dev/null || die "Couldn't delete volume $volume."
+  done
+  if docker volume inspect "${PROJECT}_fozzie_pg_local_data" </dev/null >/dev/null 2>&1; then
+    die "${PROJECT}_fozzie_pg_local_data is still there -- delete it with:" \
+      "  docker volume rm ${PROJECT}_fozzie_pg_local_data"
+  fi
+  echo "Deleted $PROJECT's containers and volumes."
+}
+
+# confirm_delete: lists what delete_instance_data would delete and returns
+# only if the user types the project name; anything else changes nothing.
+confirm_delete() {
+  local volumes volume
+  volumes="$(project_volumes || true)"
+  echo
+  echo "This permanently deletes ALL of $PROJECT's data: its database, repositories,"
+  echo "attachments, agent secrets and every backup. There is no undo. Its volumes:"
+  if [ -n "$volumes" ]; then
+    for volume in $volumes; do
+      echo "  $volume"
+    done
+  else
+    echo "  ${PROJECT}_fozzie_pg_local_data"
+  fi
+  [ "$(ask "Type $PROJECT to delete it all: ")" = "$PROJECT" ] || die "Nothing changed."
+}
+
+# installer_args: the --name/--dir arguments that point the installer
+# back at this instance, each with a leading space ("" for the default).
+installer_args() {
+  local args=""
+  [ "$NAME" = local ] || args=" --name $NAME"
+  if [ "$DIR" != "$(install_default_dir "$NAME" "${HOME:-}")" ]; then
+    args="$args --dir $DIR"
+  fi
+  printf '%s\n' "$args"
+}
+
+# leftover_data STATE: there's data here this run can't open (STATE is
+# no-env or mismatch, see install_data_state). Never makes a new password
+# for it: refuses, or asks whether to keep the data or start fresh.
+# Returns only once the data's been deleted, for a fresh install.
+leftover_data() {
+  local state="$1" args keep
+  args="$(installer_args)"
+  echo
+  if [ "$state" = no-env ]; then
+    echo "$PROJECT already has data (volume ${PROJECT}_fozzie_pg_local_data), but $ENV_FILE"
+    echo "has no database password for it -- probably the folder or .env was removed after"
+    echo "an uninstall that kept the data."
+  else
+    echo "$PROJECT already has data (volume ${PROJECT}_fozzie_pg_local_data), but the database"
+    echo "password in ${IMPORT_ENV:-$ENV_FILE} isn't the one it was created with -- probably"
+    echo ".env was removed or replaced after an uninstall that kept the data."
+  fi
+  keep="  curl -fsSL $FOZZIE_RELEASES_URL/install.sh | bash -s --$args --import-env /path/to/old/.env"
+  if [ "$INSTALL_YES" = true ] || ! have_tty; then
+    die "" "Nothing changed. Either:" \
+      "- keep the data: copy the .env it was installed with back to $ENV_FILE and run" \
+      "  this again, or point the installer at it:" "$keep" \
+      "  (that .env also holds the encryption key the data and its backups need); or" \
+      "- start fresh, deleting all of $PROJECT's data: run this again in a terminal," \
+      "  without --yes, and pick \"start fresh\"."
+  fi
+  echo
+  echo "  1) Keep my data: I have the old .env (it also holds the encryption key the"
+  echo "     data and its backups need, so the password alone isn't enough)."
+  echo "  2) Start fresh: delete all of $PROJECT's data and install a new, empty Fozzie."
+  case "$(ask "Pick 1 or 2: ")" in
+    1)
+      die "" "Copy the .env this data was installed with back to $ENV_FILE and run" \
+        "the installer again, or point it at that file:" "$keep" "Nothing changed."
+      ;;
+    2)
+      confirm_delete
+      stop_dbcheck
+      delete_instance_data
+      ;;
+    *) die "Nothing changed." ;;
+  esac
+}
+
+# uninstall: --uninstall. Asks whether to keep the data (and .env, which
+# it needs) or delete everything; never guesses.
+uninstall() {
+  local dc_cmd="cd \"$DIR\" && docker compose -p $PROJECT --env-file .env"
+  if ! have_tty; then
+    die "Uninstalling asks whether to keep your data, and there's no terminal to ask on." \
+      "Remove Fozzie and keep the data (and keep $ENV_FILE -- re-installing needs it):" \
+      "  $dc_cmd down" \
+      "Or delete everything, permanently (data, every backup, then the folder):" \
+      "  $dc_cmd down -v && rm \"$DIR/docker-compose.yml\" \"$ENV_FILE\" && rmdir \"$DIR\""
+  fi
+  echo
+  echo "Uninstalling Fozzie instance \"$NAME\" ($PROJECT):"
+  echo "  1) Remove its containers and keep its data, to reinstall later."
+  echo "  2) Delete everything: containers, all data and every backup, and $DIR's files."
+  case "$(ask "Pick 1 or 2: ")" in
+    1)
+      if [ -f "$DIR/docker-compose.yml" ] && [ -f "$ENV_FILE" ]; then
+        DC_FILE="$DIR/docker-compose.yml"
+        DC_ENV="$ENV_FILE"
+        dc down || die "'docker compose down' failed -- see the output above."
+      fi
+      remove_instance_containers
+      echo
+      echo "Removed $PROJECT's containers. Its data is still in Docker volumes."
+      echo "Keep $ENV_FILE -- re-installing needs it to open this data."
+      ;;
+    2)
+      confirm_delete
+      delete_instance_data
+      rm -f "$DIR/docker-compose.yml" "$ENV_FILE"
+      rmdir "$DIR" 2>/dev/null || true
+      echo
+      echo "To finish: log Docker out of GitHub's registry (docker logout ghcr.io), and"
+      echo "revoke the token at https://github.com/settings/tokens."
+      ;;
+    *) die "Nothing changed." ;;
+  esac
+}
+
 main() {
   install_parse_args "$@" || exit 1
   if [ "$INSTALL_HELP" = true ]; then
@@ -949,6 +1253,7 @@ main() {
   esac
   ENV_FILE="$DIR/.env"
   IMPORT_ENV="$INSTALL_IMPORT_ENV"
+  open_tty
 
   # --- 1. What's there already, and the ports -------------------------
 
@@ -970,7 +1275,7 @@ main() {
       HAVE_IMPORT_PORTS=true
     fi
   fi
-  if install_needs_ports "$NAME" "$HAVE_EXISTING_PORTS" "$HAVE_IMPORT_PORTS" "$INSTALL_CORE_PORT" "$INSTALL_DASHBOARD_PORT"; then
+  if [ "$INSTALL_UNINSTALL" != true ] && install_needs_ports "$NAME" "$HAVE_EXISTING_PORTS" "$HAVE_IMPORT_PORTS" "$INSTALL_CORE_PORT" "$INSTALL_DASHBOARD_PORT"; then
     die "The first install of instance \"$NAME\" needs two free ports, e.g.:" \
       "  curl -fsSL $FOZZIE_RELEASES_URL/install.sh | bash -s -- --name $NAME --core-port 4001 --dashboard-port 5174"
   fi
@@ -1016,7 +1321,42 @@ main() {
   command -v openssl >/dev/null 2>&1 || die "openssl isn't installed -- install it, then run this again."
 
   WORK="$(mktemp -d)"
-  trap 'rm -rf "$WORK"; rm -f "$DIR/.env.tmp" "$DIR/docker-compose.yml.tmp"' EXIT
+  trap 'stop_dbcheck; rm -rf "$WORK"; rm -f "$DIR/.env.tmp" "$DIR/docker-compose.yml.tmp"' EXIT
+
+  if [ "$INSTALL_UNINSTALL" = true ]; then
+    uninstall
+    exit 0
+  fi
+
+  # --- 2b. Existing data, and can this run open it? ---------------------
+
+  # Data, not .env, is what makes this an existing instance: one installed
+  # from source has its volumes under this same project, but no .env here.
+  # Checked before anything's downloaded: data this run's database
+  # password can't open must never get a new password generated over it
+  # (it'd keep the old one, and core-api would never start).
+  local have_data=false db_password data_state
+  if docker volume inspect "${PROJECT}_fozzie_pg_local_data" </dev/null >/dev/null 2>&1; then
+    have_data=true
+  fi
+  db_password="$(install_env_get "$IMPORT_ENV" POSTGRES_PASSWORD)"
+  [ -n "$db_password" ] || db_password="$(install_env_get "$ENV_FILE" POSTGRES_PASSWORD)"
+  # Unchecked, data with a password is "unknown": then check it.
+  data_state="$(install_data_state "$have_data" "$db_password" "")"
+  if [ "$data_state" = unknown ]; then
+    log "Checking the database password against $PROJECT's existing data"
+    db_password_check "$db_password"
+    data_state="$(install_data_state "$have_data" "$db_password" "$DB_CHECK_RESULT")"
+  fi
+  case "$data_state" in
+    no-env | mismatch)
+      leftover_data "$data_state"
+      have_data=false
+      ;;
+    unknown)
+      echo "Warning: couldn't check the database password against $PROJECT's data -- carrying on."
+      ;;
+  esac
 
   # --- 3. The latest release -------------------------------------------
 
@@ -1126,12 +1466,7 @@ main() {
 
   # --- 5. Existing data? -----------------------------------------------
 
-  # Data, not .env, is what makes this an existing instance: one installed
-  # from source has its volumes under this same project, but no .env here.
-  local have_data=false old_version
-  if docker volume inspect "${PROJECT}_fozzie_pg_local_data" </dev/null >/dev/null 2>&1; then
-    have_data=true
-  fi
+  local old_version
   old_version="$(install_env_get "$ENV_FILE" FOZZIE_VERSION)"
 
   if [ "$have_data" = true ] && [ "$INSTALL_YES" != true ]; then
@@ -1189,7 +1524,15 @@ main() {
     log "Pulling the rest of Fozzie $LATEST_VERSION"
     dc pull || die "Couldn't pull the images -- nothing changed. Check the output above, then run this again."
     log "Taking a backup before switching to $LATEST_VERSION"
-    if ! dc run --rm -T backup node dist/backupCli.js run; then
+    if ! dc run --rm -T backup node dist/backupCli.js run 2>&1 | tee "$WORK/backup.log"; then
+      # The database refusing the password isn't a backup problem: core-api
+      # would be refused too, so carrying on can only end in a timeout.
+      if [ "$(install_backup_failure_category "$(cat "$WORK/backup.log")")" = auth ]; then
+        die "" "The backup failed because the database refused its password: POSTGRES_PASSWORD" \
+          "in ${IMPORT_ENV:-$ENV_FILE} isn't the one $PROJECT's data was created with." \
+          "Put back the .env this data was installed with, or re-run with" \
+          "--import-env pointing at it. Nothing changed."
+      fi
       echo "The backup failed -- see the output above."
       if [ "$INSTALL_YES" = true ] || ! have_tty || ! confirm "Continue WITHOUT a backup?"; then
         die "Nothing changed."
@@ -1231,6 +1574,14 @@ main() {
     sleep 2
   done
   if [ "$ready" != true ]; then
+    local hint
+    hint="$(install_core_api_failure_hint "$(dc logs --no-color --tail 200 core-api 2>&1 || true)")"
+    if [ -n "$hint" ]; then
+      die "core-api didn't become healthy within 3 minutes." \
+        "Likely cause: $hint" \
+        "Its logs:" \
+        "  cd \"$DIR\" && docker compose -p $PROJECT --env-file .env logs core-api"
+    fi
     die "core-api didn't become healthy within 3 minutes. Check its logs for what went wrong:" \
       "  cd \"$DIR\" && docker compose -p $PROJECT --env-file .env logs core-api"
   fi
@@ -1314,11 +1665,8 @@ main() {
 
   # --- 11. Open the browser, and how to run it from here -----------------
 
-  local update_args=""
-  [ "$NAME" = local ] || update_args=" --name $NAME"
-  if [ "$DIR" != "$(install_default_dir "$NAME" "${HOME:-}")" ]; then
-    update_args="$update_args --dir $DIR"
-  fi
+  local update_args
+  update_args="$(installer_args)"
 
   log "Fozzie $LATEST_VERSION (instance \"$NAME\") is running at http://localhost:$DASHBOARD_PORT"
   echo
@@ -1330,8 +1678,9 @@ main() {
   echo "Stop:          $dc_cmd stop"
   echo "Start again:   $dc_cmd up -d"
   echo "List backups:  $dc_cmd run --rm backup node dist/backupCli.js list"
-  echo "Uninstall:     $dc_cmd down     (keeps your data)"
+  echo "Uninstall:     $dc_cmd down     (keeps your data -- keep .env too: it's needed to open it)"
   echo "               $dc_cmd down -v  (DELETES ALL DATA, permanently)"
+  echo "               or re-run the installer with --uninstall, which asks which"
   echo
   if [ "$agents_on" = true ]; then
     echo "Agents are on: create one in Agents → Set up an agent"

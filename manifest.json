@@ -1,7 +1,21 @@
 {
   "schema": 1,
-  "latest": "0.1.4",
+  "latest": "0.1.5",
   "releases": [
+    {
+      "version": "0.1.5",
+      "publishedAt": "2026-11-08T05:38:52.241Z",
+      "minUpgradableFrom": "0.1.0",
+      "lastMigration": "20261111120000_auth_credential_expiry",
+      "notes": "Agent sessions can now run for 40 minutes (was 20), so long test runs and reviews stop parking work. Includes the Security sweep 3 dependency upgrades (Prisma 7, Express 5, graphql-yoga 6, TypeScript 6), browser session expiry, a fix for the publish build, and a clearer installer message when old data is left with no .env.\n\n- Interim: raise the agent session budget to 40 min and the work lease to 60 min\n- Update query-count tests for Prisma 7 adapter-pg query logging\n- Agent: Implement\n- Security sweep 3.9 (4/4): bump dashboard typescript ^5.9.3 -> ^6.0.3\n- Sweep 3.10: keep core on graphql 16 -- note why in yoga.ts\n- Security sweep 3.6 (1/2): agent entrypoint uses core's local Prisma CLI\n- Security sweep 3.5: bump core graphql-yoga ^5.24.6 -> ^6.0.1\n- dashboard: @atlaskit/pragmatic-drag-and-drop 4 (unit-testing 2.1)\n- Security sweep 3.4: bump core express ^4.19.2 -> ^5.3.0 (+ @types/express ^5.0.6)\n- Fit MCP inspect_permissions under core-api's complexity limit\n- Security sweep 3.1: bump mcp zod ^3.23.0 -> ^4.6.7\n- Use the lockfile and npm ci in core's dev image stage\n- Expire browser sessions and optionally API tokens (ADR-0221)\n- Agent: Finish sweep 2b: graphql-codegen bump (+override/ADR), Playwright 1.65, npm audit fix, and fix the \"Agent: Implement\" vite/vitest commit message\n- Authorities inherit their parents' grants, resolved at read time (ADR-0220)\n- Installer: detect leftover data with no .env instead of failing on a password mismatch\n- Move Docker-CLI-based images from docker:27-cli to docker:29-cli (ADR-0219)\n- Security sweep 2a: bump mcp vitest ^2.0.0 -> ^4.1.12\n- Agent: Implement\n- Fit MCP's descendants, available_work and inspect_permissions under core-api's complexity limit, and guard every MCP operation\n- Agent: Implement\n- Nest the parts of pre-amendment splits under their original (ADR-0184)\n- Agent: Implement\n- Fit TeamMembers and AddTeamMemberCandidates under core-api's complexity limit, and guard every dashboard operation\n- Agent: Implement\n- Agent: Implement\n- Harden ADR-0173 carry-over tests against suite-load timeouts\n- mcp: bump @modelcontextprotocol/sdk to ^1.32.2 for runtime audit fixes\n- Agent: port find_coding_task_root_id ROOT-stop to docker/ui-runner\n- Security sweep 1: clear critical/high runtime npm audit findings in core\n",
+      "images": {
+        "core-api": "ghcr.io/functionberry/fozzie-dist-core-api@sha256:145ffa3fa94f3901a85eeaaa35a46dd1e03a502c15195c9b69030bf854ef2f09",
+        "dashboard": "ghcr.io/functionberry/fozzie-dist-dashboard@sha256:4410a1d10b235b293152fa33fa6bc1a54193be1584ad0f3b4388d91f36811658",
+        "updater": "ghcr.io/functionberry/fozzie-dist-updater@sha256:9d5f56f36aa1686dd34f4c41c914d0c56c69c430912856e3fd57468ecc7cae5c",
+        "agent": "ghcr.io/functionberry/fozzie-dist-agent@sha256:f02e37226e8a9a2c0013fcefe29b115330202398eb552474a35d9058068887ce",
+        "orchestrator": "ghcr.io/functionberry/fozzie-dist-orchestrator@sha256:d99e99e42a2e3eae07028e96ade36f60d5ff4fcaeb2c51fbcf143656ecba8e3e"
+      }
+    },
     {
       "version": "0.1.4",
       "publishedAt": "2026-11-06T22:24:58.118Z",

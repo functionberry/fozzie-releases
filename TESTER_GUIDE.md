@@ -89,7 +89,10 @@ instance). That directory holds two files:
   settings.
 
 Your data itself (the database, git repositories, attachments and
-backups) lives in Docker volumes, not in that directory.
+backups) lives in Docker volumes, not in that directory. It can only be
+opened with this `.env`: its database password and encryption key are
+the ones the data was created with, and your backups are encrypted with
+that key. Keep a private copy of `.env` somewhere safe.
 
 ## Updating
 
@@ -144,25 +147,47 @@ Fozzie also starts by itself when Docker does, until you stop it.
 
 ## Uninstalling
 
+There are two ways to uninstall, and they're very different. The
+installer can ask you which one you want and do it for you (add
+`--name` if you used one):
+
+```sh
+curl -fsSL https://functionberry.github.io/fozzie-releases/install.sh | bash -s -- --uninstall
+```
+
+Or do it by hand:
+
+**(a) Remove Fozzie, but keep your data to reinstall later.**
+
 ```sh
 cd ~/fozzie
 docker compose -p fozzie-local --env-file .env down
 ```
 
-This removes the containers and **keeps your data**: re-running the
-installer brings it all back.
+This removes the containers and **keeps your data** in its Docker
+volumes. **Keep `~/fozzie/.env` too** (or a private copy of it): it holds
+the database password and encryption key that data needs. Re-running the
+installer with that `.env` in place brings it all back. Without it, the
+data can't be opened (see
+[Troubleshooting](#troubleshooting)).
+
+**(b) Remove everything.**
 
 > [!WARNING]
-> `docker compose -p fozzie-local --env-file .env down -v` also deletes
-> the volumes: **your database, repositories, attachments and every
-> backup, permanently**. There is no undo. Only run it if you want
-> everything gone.
+> This deletes **your database, repositories, attachments and every
+> backup, permanently**. There is no undo.
 
-To remove the rest:
+```sh
+cd ~/fozzie
+docker compose -p fozzie-local --env-file .env down -v
+cd ~ && rm -rf ~/fozzie
+docker logout ghcr.io
+```
 
-- delete the directory: `rm -rf ~/fozzie`;
-- log Docker out of GitHub's registry: `docker logout ghcr.io`;
-- revoke the token at <https://github.com/settings/tokens>.
+Then revoke the token at <https://github.com/settings/tokens>.
+
+Only delete the `~/fozzie` directory after `down -v`: deleting it after a
+plain `down` leaves your data behind with nothing that can open it.
 
 ## Using a local model (Ollama)
 
@@ -224,8 +249,29 @@ without `read:packages`. Create a new one with only that ticked.
 4000 or 5173 (or the ports you picked). Re-run the installer with other
 ports, for example `--core-port 4001 --dashboard-port 5174`.
 
-**"core-api didn't become healthy within 3 minutes."** Look at its logs
-for the reason:
+**"… already has data …, but … has no database password for it" (or "a
+different one").** An earlier install's data is still in Docker, but its
+`.env` was deleted or replaced, for example by removing `~/fozzie` after
+a plain `down`. The installer won't make a new password for that data:
+it would never open. Either:
+
+- **keep the data**: copy the old `.env` back to `~/fozzie/.env` and run
+  the installer again, or run it with `--import-env /path/to/old/.env`.
+  Entering just the old password isn't enough: `.env` also holds the
+  encryption key your data and backups need. Or
+- **start fresh**: run the installer again in a terminal and pick
+  "Start fresh". It lists what it will delete and asks you to type the
+  instance's name (e.g. `fozzie-local`) first. This deletes all of that
+  instance's data and backups, permanently.
+
+**"The backup failed because the database refused its password."** The
+same cause as the previous entry: this `.env` isn't the one the data was
+created with. Do the same.
+
+**"core-api didn't become healthy within 3 minutes."** The installer
+prints the likely cause when core-api's logs show one: for example, that
+the database refused its password (see the entries above). Otherwise,
+look at its logs for the reason:
 
 ```sh
 cd ~/fozzie
