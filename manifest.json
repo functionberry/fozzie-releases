@@ -1,7 +1,21 @@
 {
   "schema": 1,
-  "latest": "0.1.5",
+  "latest": "0.1.6",
   "releases": [
+    {
+      "version": "0.1.6",
+      "publishedAt": "2026-11-09T02:30:20.776Z",
+      "minUpgradableFrom": "0.1.0",
+      "lastMigration": "20261113120000_remove_everyone_root_read",
+      "notes": "Fozzie now requires sign-in: anonymous access is refused, and existing agents are moved into the right group automatically when you update. New permissions tools let admins see who has access to anything and why, check what someone can do, manage authority groups, and revoke or edit grants, with a guard against removing the last admin. Also fixes the page scrolling bug and literal backticks around inline code.\n\n- Permissions tab: \"Check someone's access\" section\n- Backfill INTERNAL membership for agents made before ADR-0213 (ADR-0237)\n- Drop prose's inline-code backticks in every markdown view\n- RepoMirrorTab: keep Push now focusable while pushing (fix flaky focus test)\n- Query.effectiveAccess: what one participant can do, and why (ADR-0236)\n- Stop the document scrolling: lock html/body, make every scroll region relative\n- Authorities: read the test fixtures as an INTERNAL member after ADR-0234\n- Permissions tab core: Entity.applicablePermissions (ADR-0235)\n- Agent: Implement\n- Report authority membership drift (ADR-0232)\n- ADR-0233: security sweep 3 wrap-up -- majors left behind and remaining audit findings\n- Allow Apollo 4's deprecated useQuery `skip` option in dashboard lint\n- Add the security-sweep agent run mode (ADR-0223, part 2)\n- Fix Apollo 4 test failures: MockedProvider network-status default and standby refetch\n- Import createGraphQLError from graphql/errors in securitySweep after the graphql-yoga 6 merge\n- Add revokePermission and updatePermission mutations (ADR-0229)\n- One instance-admin rule: assertInstanceAdmin / isInstanceAdmin (ADR-0227)\n",
+      "images": {
+        "core-api": "ghcr.io/functionberry/fozzie-dist-core-api@sha256:45b03002820380b41e4524a678912a64bfe10b7233f8d44451baecc9bb15215f",
+        "dashboard": "ghcr.io/functionberry/fozzie-dist-dashboard@sha256:8231ee91cce5f1190a22fdffced6588bddbfc708f5c1f5acde7d2efcfac3ca84",
+        "updater": "ghcr.io/functionberry/fozzie-dist-updater@sha256:0334a9699dd05fc633a1afbd71f0723b63c97afd9302b60a239f17cbbcd28866",
+        "agent": "ghcr.io/functionberry/fozzie-dist-agent@sha256:0ca3f84137b8b90e8b7c0fba297b3a803687f346eab3aca563b8427f7f8bb21b",
+        "orchestrator": "ghcr.io/functionberry/fozzie-dist-orchestrator@sha256:ac54d71f6ad54c12fdca2fa7c6bef02d4f9672167873220151e8d44e29f91681"
+      }
+    },
     {
       "version": "0.1.5",
       "publishedAt": "2026-11-08T05:38:52.241Z",
