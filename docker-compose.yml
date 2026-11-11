@@ -72,6 +72,7 @@ services:
       FOZZIE_PUBLIC_URL: http://localhost:${CORE_API_PORT:-4000}
       FOZZIE_FEDERATION_SYNC_INTERVAL_MS: ${FOZZIE_FEDERATION_SYNC_INTERVAL_MS:-60000}
       FOZZIE_ARCHIVE_SWEEP_INTERVAL_MS: ${FOZZIE_ARCHIVE_SWEEP_INTERVAL_MS:-}
+      FOZZIE_AUTO_COMPLETE_INTERVAL_MS: ${FOZZIE_AUTO_COMPLETE_INTERVAL_MS:-}
       FOZZIE_MERGE_TEST_GATE: ${FOZZIE_MERGE_TEST_GATE:-warn}
       FOZZIE_UI_TEST_GATE: ${FOZZIE_UI_TEST_GATE:-warn}
       FOZZIE_DEPLOY_ENVIRONMENT_ID: ${FOZZIE_DEPLOY_ENVIRONMENT_ID:-}
@@ -264,8 +265,9 @@ services:
       # this environment.
       FOZZIE_AGENT_IMAGE: ${FOZZIE_AGENT_IMAGE:-}
       FOZZIE_API_RETRY_SECONDS: ${FOZZIE_API_RETRY_SECONDS:-300}
-      # No UI runner on tester installs (UI tests gate on warn), so no
-      # Playwright pre-pull either.
+      # No UI runner on tester installs, so Run UI tests is skipped as not
+      # applicable and the UI gate doesn't apply (ADR-0240), and there's
+      # no Playwright pre-pull either.
       UI_RUNNER_PARTICIPANT_ID: ""
       MAX_CONCURRENT_AGENTS: ${MAX_CONCURRENT_AGENTS:-1}
       POLL_INTERVAL_SECONDS: "20"

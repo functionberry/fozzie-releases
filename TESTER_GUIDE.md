@@ -1,7 +1,7 @@
 # Fozzie private beta: tester guide
 
 Thanks for testing Fozzie. This guide covers installing it, keeping it up
-to date, backups, and removing it again. Everything runs on your own
+to date, backups, running agents, and removing it again. Everything runs on your own
 machine in Docker, and nothing is reachable from outside it: every port
 listens on `localhost` only.
 
@@ -135,6 +135,28 @@ docker compose -p fozzie-local --env-file .env run --rm backup node dist/backupC
 If you need to restore one, ask Mark: restoring replaces your current
 data, so it's worth doing together.
 
+## Locked out?
+
+If you've forgotten your password and nobody else can reset it for you,
+you can get a reset link from a terminal on this computer. Run this from
+`~/fozzie` (or `~/fozzie-<name>`, with `-p fozzie-<name>`), using the
+email address you sign in with:
+
+```sh
+cd ~/fozzie
+docker compose -p fozzie-local --env-file .env exec core-api node dist/adminCli.js reset-password you@example.com
+```
+
+It prints a link that works once, for an hour. Open it in your browser
+and choose a new password. That signs the account out everywhere else and
+revokes its API tokens.
+
+Fozzie must be running: `exec` needs the `core-api` container up. If it
+isn't, start Fozzie first (see [Stopping and starting](#stopping-and-starting)).
+
+Anyone with a terminal on this computer can do this, so it works even when
+you're the only admin.
+
 ## Stopping and starting
 
 ```sh
@@ -220,12 +242,44 @@ as an AI provider:
    file sets it up on Linux). If listing the models fails, the error says
    what to fix.
 
+## Agents
+
+Agents are AI workers that pick up work you assign to them. They run in
+their own containers, started by the **agent service**, which the
+installer turns on by default. It uses an AI provider you supply.
+
+To set one up:
+
+1. In Fozzie, go to **Agents** and click **Set up an agent**.
+2. Give it a name, pick an AI provider and model (and a budget, if the
+   provider charges per use), and choose its repository.
+3. The last step offers a first task, set up as a coding task and
+   assigned to the agent. Create it, then watch the agent on the
+   **Agents** page: it shows **Running** while it works on the task, and
+   **Idle** when it's waiting for more.
+
+To turn the agent service off, re-run the installer with `--no-agents`
+(and `--name` if you used one). Later runs remember that. To turn it back
+on, use `--with-agents`:
+
+```sh
+curl -fsSL https://functionberry.github.io/fozzie-releases/install.sh | bash -s -- --no-agents
+curl -fsSL https://functionberry.github.io/fozzie-releases/install.sh | bash -s -- --with-agents
+```
+
+If you installed Fozzie before agents shipped, re-run the installer once
+to add the agent service: in-app updates don't add it. Until then, the
+Agents page says "Agent service not set up on this instance" and shows
+the command to run.
+
 ## Feedback
 
 Email Mark at <TODO: Mark to fill in>. Screenshots, the version (shown in
 Settings) and what you were doing all help.
 
 ## Troubleshooting
+
+**Forgot your password?** See [Locked out?](#locked-out).
 
 **"Docker isn't running."** Start Docker Desktop (or the Docker service on
 Linux), wait until it says it's running, then run the installer again.
@@ -296,6 +350,27 @@ docker compose -p fozzie-local --env-file .env ps updater
 
 If it isn't listed as running, re-run the installer: that starts it again,
 and also updates Fozzie.
+
+**"Agent service not set up on this instance."** This install doesn't
+run the agent service yet: it was probably installed before agents
+shipped. Re-run the installer (see [Agents](#agents)).
+
+**An agent doesn't start, or the Agents page says the agent service isn't
+running.** Check the orchestrator's logs, which show what the agent
+service is doing:
+
+```sh
+cd ~/fozzie
+docker compose -p fozzie-local --env-file .env logs orchestrator
+```
+
+For a named instance, use `~/fozzie-<name>` and `-p fozzie-<name>`. If
+you turned agents off with `--no-agents`, turn them back on with
+`--with-agents` (see [Agents](#agents)).
+
+**"The orchestrator's heartbeat to core-api is failing (HTTP 401)" (or
+404).** The agent service and Fozzie don't agree on the secret it reports
+in with. Re-run the installer: it sets the secret up again for both.
 
 **"Fozzie couldn't go back on its own."** An update failed, and so did the
 automatic rollback. The progress window shows the steps to fix it by hand,
