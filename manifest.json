@@ -1,7 +1,22 @@
 {
   "schema": 1,
-  "latest": "0.1.7",
+  "latest": "0.1.8",
   "releases": [
+    {
+      "version": "0.1.8",
+      "publishedAt": "2026-11-12T23:51:52.192Z",
+      "minUpgradableFrom": "0.1.0",
+      "lastMigration": "20261118120000_sprint_member_planned_by_team",
+      "notes": "Free-tier friendly agents (sensible request-rate defaults, detect and pause incompatible models, Test this model), agent Runs and Queue tabs for diagnosing idle agents, sprint owners and followers, Settings → Repair for recomputing statuses, auto-linked entity IDs in markdown, and Approve steps routed away from a PR's author.\n\n- Auto-link bare entity UUIDs in EntityLinkedMarkdown\n- Cheap-step deferral ends when the cheap identity never claims (ADR-0271)\n- Renumber Agent Queue dispatch ADR from 0259 to 0265 (main took 0259)\n- Sprints tab for follower teams; Use Scrum only for neither (ADR-0270 stage 3a)\n- Sprints tab: follower mode (ADR-0270 stage 3a)\n- Sprint-completed activity card: per-team carry-over summary (ADR-0270 §6)\n- Add Settings → Repair page for recomputing derived data (ADR-0269)\n- Sprints in the Explorer: fixed placement, type icon, header team link\n- Sprint owners and followers (ADR-0270)\n- Renumber recompute-derived-data ADR from 0263 to 0269 (main took 0263)\n- Ask a Scrum team without a Work home root to choose one (ADR-0259)\n- Renumber ADR-0267 (agents assign human follow-ups) to ADR-0268\n- \"Test this model\" button beside the model pickers (ADR-0260 part 2)\n- Goose: classify a provider chat-template 400 (minijinja) as MODEL_INCOMPATIBLE (ADR-0267)\n- Add AWAITING_OWNER stalled kind for ownerless human follow-ups in a batch\n- Agent page Runs tab: last dispatch and recent worker exits (ADR-0258)\n- Renumber suggested-request-limits ADR from 0258 to 0264 (main took 0258)\n- Required reviewers UI on the repository and pull request pages (ADR-0211)\n- Renumber summarize-test-output ADR to ADR-0263 after rebasing onto main\n- Release a claim when its step leaves the claimant's model tiers (ADR-0262)\n- Approve step never left with its agent author (ADR-0261)\n- Test an AI model before dispatching to it: testAIResourceModel (ADR-0260 part 1)\n- Sprints live under the team's home root, not the team (ADR-0259)\n- Record every worker exit per agent, and report lastDispatchAt (ADR-0258)\n- Updater says when the install's compose file is out of date (ADR-0257 part 2)\n- Manifest records each release's compose hash (composeSha256)\n- Renumber hold-dispatch-until-release-images ADR from 0254 to 0256 (main took 0254)\n- Keep the hook-run agent and scripts shell suites bash 3.2 safe (ADR-0255)\n- Renumber 'Core hands out ADR numbers' to ADR-0254 (main took 0253)\n- Host scripts: tell a refused test-result token apart from a missing result (ADR-0234)\n- Core: daily sweep that deletes FozGit branches of finished work (ADR-0253)\n- Renumber ADR-0251 (commit and merge subjects) to ADR-0252\n- Renumber ADR-0250 (defer cheap steps) to ADR-0251 -- 0250 taken on main (ADR-0194)\n",
+      "images": {
+        "core-api": "ghcr.io/functionberry/fozzie-dist-core-api@sha256:30c9aa0fe7caf5a455f8f0b164b023022a0906ee81cb18062b7c8fe2d1953b76",
+        "dashboard": "ghcr.io/functionberry/fozzie-dist-dashboard@sha256:59d899902113c34251548e700cbfb6223310579b0f44e43b364e5cf10d77afe7",
+        "updater": "ghcr.io/functionberry/fozzie-dist-updater@sha256:118571f8f28aa006edbf95f7bd0a0063964caaf88f4d2ff564234d2710357a7d",
+        "agent": "ghcr.io/functionberry/fozzie-dist-agent@sha256:805a81968ff85af3a4588936ecd104b24823220b93bc0e98be100b598d5082a7",
+        "orchestrator": "ghcr.io/functionberry/fozzie-dist-orchestrator@sha256:9c728956e0e1d3a42f083dcaf0cc3ea10fddc80ebc02183f0b5b132911315a3f"
+      },
+      "composeSha256": "5d8dcf396f66f3473c3531a504e15d9ae3aa180b4aa28360e336e833778d6bd1"
+    },
     {
       "version": "0.1.7",
       "publishedAt": "2026-11-11T05:22:50.859Z",

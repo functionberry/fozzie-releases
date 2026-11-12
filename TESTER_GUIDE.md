@@ -114,7 +114,8 @@ is safe.
 You can always update by re-running the same install command instead (with
 `--name` if you used one). It keeps your data and settings, takes a backup
 first, and then switches to the latest release. Do this if Fozzie says your
-version is too old to update in place, or that the updater is out of date.
+version is too old to update in place, that the updater is out of date, or
+that this install's compose file is out of date.
 
 ## Backups
 
