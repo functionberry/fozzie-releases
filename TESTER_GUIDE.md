@@ -145,7 +145,7 @@ email address you sign in with:
 
 ```sh
 cd ~/fozzie
-docker compose -p fozzie-local --env-file .env exec core-api node dist/adminCli.js reset-password you@example.com
+docker compose -p fozzie-local --env-file .env exec --user node core-api node dist/adminCli.js reset-password you@example.com
 ```
 
 It prints a link that works once, for an hour. Open it in your browser

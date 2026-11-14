@@ -1,7 +1,22 @@
 {
   "schema": 1,
-  "latest": "0.1.8",
+  "latest": "0.1.9",
   "releases": [
+    {
+      "version": "0.1.9",
+      "publishedAt": "2026-11-14T20:12:36.043Z",
+      "minUpgradableFrom": "0.1.0",
+      "lastMigration": "20261118120000_sprint_member_planned_by_team",
+      "notes": "Security release from the 2026-11-14 code review: git revision validation and a strict push parser, core-api runs as non-root, default branches protected on every repo, agents isolated from each other's credentials, credential minting and password changes tightened, independent approval enforced at merge, and the UI runner no longer trusts PR-branch compose files. Also: subtree queries no longer fail past 32,766 entities, and a new Your profile page.\n\n- Your profile page: name, login email, membership and security links\n- Scope subtrees in SQL, not as id lists, past Prisma's 32,766-param limit (ADR-0276)\n- Require the current password for a self password change and sign out other sessions (S6)\n- Close the S6 API-key chain: credential minting rules (ADR-0275)\n- UI runner: compose files, Dockerfiles and Playwright image come from the target (S5)\n- Keep S4's agent isolation with core-api non-root: credentials files are mode 0000\n- core-api runs as uid 1000, not root (ADR-0274)\n- Validate caller-supplied git revisions and fence them with --end-of-options (S1)\n- FozGit: strict receive-pack parsing, fail-closed push checks, pre-receive allowlist hook (ADR-0272)\n",
+      "images": {
+        "core-api": "ghcr.io/functionberry/fozzie-dist-core-api@sha256:cec7694ce939fb13f5ae853766e30c43cb20567e361db94a2ebad7d80844a219",
+        "dashboard": "ghcr.io/functionberry/fozzie-dist-dashboard@sha256:7c491c1e88b2e96ba399617bf209a44e728bb71ac910fec9e0c927b97369d687",
+        "updater": "ghcr.io/functionberry/fozzie-dist-updater@sha256:148722290c1177a14c42857b35f9f5f3b9f61298a606672eea9f0f106c6d83fb",
+        "agent": "ghcr.io/functionberry/fozzie-dist-agent@sha256:a573837bf65ed3cd2610f65e37bba97152bb56ef9526a52d2691391193d0a2ca",
+        "orchestrator": "ghcr.io/functionberry/fozzie-dist-orchestrator@sha256:50204280fe1e6c3c0035466bd8044b9c1797e432ef5d4ed8225f7e515c62a7fd"
+      },
+      "composeSha256": "5d8dcf396f66f3473c3531a504e15d9ae3aa180b4aa28360e336e833778d6bd1"
+    },
     {
       "version": "0.1.8",
       "publishedAt": "2026-11-12T23:51:52.192Z",
