@@ -1,7 +1,22 @@
 {
   "schema": 1,
-  "latest": "0.1.9",
+  "latest": "0.1.10",
   "releases": [
+    {
+      "version": "0.1.10",
+      "publishedAt": "2026-11-15T00:00:03.597Z",
+      "minUpgradableFrom": "0.1.0",
+      "lastMigration": "20261118120000_sprint_member_planned_by_team",
+      "notes": "Use Fozzie from other devices: the dashboard now serves the API through its own origin, so it works by host name or LAN IP; opt-in network access for tester installs (install.sh --public-host), with safe-access guidance; invite and reset links use the configured public URL; and a clear \"Can't reach the Fozzie server\" screen replaces the raw NetworkError.\n\n- Make subtreeScopeScale cleanup finish within its statement timeout\n- Opt-in network access for tester installs (ADR-0277)\n- Show a clear \"Can't reach the Fozzie server\" screen instead of failing open\n- Invite and reset links use the configured public URL, not window.location\n- Dashboard proxies core-api's browser routes so it works from any host (same-origin /graphql)\n",
+      "images": {
+        "core-api": "ghcr.io/functionberry/fozzie-dist-core-api@sha256:81fff7f59586b448f652b126c726e1d2a2c906e4dba129456a11ae2106ab0e25",
+        "dashboard": "ghcr.io/functionberry/fozzie-dist-dashboard@sha256:21d8fed50addd832cf3a257dbc87c3665971b15f4dd7777c80de741857bf8546",
+        "updater": "ghcr.io/functionberry/fozzie-dist-updater@sha256:ae2fce89a942a9cff009c8e2682cad7f5cf0f6577210f6e698677e37f425e43d",
+        "agent": "ghcr.io/functionberry/fozzie-dist-agent@sha256:762c40550415f714fa837b4eb00de1db28c619caeea9f89b141d8ca975070002",
+        "orchestrator": "ghcr.io/functionberry/fozzie-dist-orchestrator@sha256:8489afa1013c45f76db225f7cc34f9f532cc5b9cc0088778ef2ceae490598080"
+      },
+      "composeSha256": "15e93dc767371ff7cf211887fc98d5d3662181fd704f119412a2e0f034f145ba"
+    },
     {
       "version": "0.1.9",
       "publishedAt": "2026-11-14T20:12:36.043Z",

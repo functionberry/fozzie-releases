@@ -175,7 +175,7 @@ INSTALL_GHCR_TOKEN_REGEX="^[${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}_]+
 INSTALL_ENV_VALUE_REGEX="^[${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}+/=._:@-]+\$"
 
 # The keys install_merge_env owns, in the order it appends them.
-INSTALL_MANAGED_KEYS="FOZZIE_VERSION FOZZIE_CORE_API_IMAGE FOZZIE_DASHBOARD_IMAGE FOZZIE_UPDATER_IMAGE POSTGRES_PASSWORD FOZZIE_ENCRYPTION_KEY FOZZIE_UPDATER_TOKEN CORE_API_PORT DASHBOARD_PORT GHCR_USERNAME GHCR_TOKEN COMPOSE_PROJECT FOZZIE_INSTALL_DIR FOZZIE_AGENT_IMAGE FOZZIE_ORCHESTRATOR_IMAGE FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET FOZZIE_INSTANCE_NAME FOZZIE_AGENTS_ENABLED COMPOSE_PROFILES"
+INSTALL_MANAGED_KEYS="FOZZIE_VERSION FOZZIE_CORE_API_IMAGE FOZZIE_DASHBOARD_IMAGE FOZZIE_UPDATER_IMAGE POSTGRES_PASSWORD FOZZIE_ENCRYPTION_KEY FOZZIE_UPDATER_TOKEN CORE_API_PORT DASHBOARD_PORT GHCR_USERNAME GHCR_TOKEN COMPOSE_PROJECT FOZZIE_INSTALL_DIR FOZZIE_AGENT_IMAGE FOZZIE_ORCHESTRATOR_IMAGE FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET FOZZIE_INSTANCE_NAME FOZZIE_AGENTS_ENABLED COMPOSE_PROFILES FOZZIE_BIND_ADDRESS FOZZIE_PUBLIC_HOST FOZZIE_DASHBOARD_URL FOZZIE_CORE_PUBLIC_URL"
 
 INSTALL_ENV_HEADER="# Managed by the Fozzie installer: it rewrites the keys it manages on every run and keeps every other line. Holds secrets -- keep it private."
 
@@ -207,6 +207,20 @@ Options:
   --no-agents             Don't run the agent service (it's on by default).
                           Remembered: later runs keep it off.
   --with-agents           Turn the agent service back on after --no-agents.
+  --public-host HOST      Open the dashboard to your network, reachable from
+                          other devices at http://HOST:<dashboard port>
+                          (HOST is this machine's name or IP, e.g.
+                          officemacbook.local). On its own it listens on
+                          every interface (0.0.0.0). Emailed links use HOST.
+  --bind-address ADDR     The IPv4 address the dashboard listens on, e.g.
+                          Tailscale's 100.x address, or 0.0.0.0 for every
+                          interface (default 127.0.0.1: this machine only).
+  --localhost-only        Switch back to this machine only (the default).
+                          Only the dashboard's port is ever opened to the
+                          network; core-api's stays local. The choice is
+                          remembered by later runs and updates. Plain HTTP:
+                          read "Using Fozzie from another device" in the
+                          tester guide first.
   --uninstall             Remove this instance: asks whether to keep its data
                           (and .env, which that data needs) or delete
                           everything. Needs a terminal; --yes doesn't skip it.
@@ -243,6 +257,66 @@ install_valid_port() {
   [[ "$1" =~ ^[123456789][0123456789]{0,4}$ ]] && [ "$1" -le 65535 ]
 }
 
+# One IPv4 octet: 0 to 255, no leading zero except a lone 0.
+INSTALL_IPV4_OCTET_REGEX='^(0|[123456789][0123456789]{0,2})$'
+
+# True (0) iff addr is a dotted-quad IPv4 address: four octets from 0 to
+# 255, no leading zeros except a lone 0. IPv6, and anything with a colon
+# (a port), is rejected.
+install_valid_ipv4() {
+  local addr="$1" rest octet n=0
+  case "$addr" in
+    "" | .* | *. | *..*) return 1 ;;
+  esac
+  rest="$addr."
+  while [ -n "$rest" ]; do
+    octet="${rest%%.*}"
+    rest="${rest#*.}"
+    n=$((n + 1))
+    [ "$n" -le 4 ] || return 1
+    [[ "$octet" =~ $INSTALL_IPV4_OCTET_REGEX ]] || return 1
+    [ "$octet" -le 255 ] || return 1
+  done
+  [ "$n" -eq 4 ]
+}
+
+# True (0) iff addr is an IPv4 loopback address (127.x.x.x).
+install_is_loopback() {
+  case "$1" in
+    127.*) return 0 ;;
+  esac
+  return 1
+}
+
+# One hostname label: letters, digits and "-", 1 to 63 characters, not
+# starting or ending with "-".
+INSTALL_HOST_LABEL_REGEX="^[${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}]([${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}-]{0,61}[${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}])?\$"
+
+INSTALL_ALL_DIGITS_REGEX="^[${INSTALL_DIGITS}]+\$"
+
+# True (0) iff host is what --public-host takes: an IPv4 address or a
+# hostname -- dot-separated labels (INSTALL_HOST_LABEL_REGEX), at most 253
+# characters in all. No scheme, port, path, "_" or whitespace, so it's
+# safe in .env unquoted and in a URL as-is.
+install_valid_public_host() {
+  local host="$1" rest label
+  install_valid_ipv4 "$host" && return 0
+  [ -n "$host" ] || return 1
+  [ "${#host}" -le 253 ] || return 1
+  case "$host" in
+    .* | *. | *..*) return 1 ;;
+  esac
+  rest="$host."
+  while [ -n "$rest" ]; do
+    label="${rest%%.*}"
+    rest="${rest#*.}"
+    [[ "$label" =~ $INSTALL_HOST_LABEL_REGEX ]] || return 1
+  done
+  # An all-digit last label is a mistyped IPv4 address (256.1.1.1,
+  # 1.2.3), not a hostname: no top-level domain is all digits.
+  ! [[ "$label" =~ $INSTALL_ALL_DIGITS_REGEX ]]
+}
+
 # The Compose project for an instance name: fozzie-<name>, so the default
 # "local" instance is fozzie-local -- the same as the source-built
 # install's.
@@ -263,13 +337,16 @@ install_default_dir() {
 
 # Parses install.sh's arguments into INSTALL_NAME, INSTALL_PROJECT,
 # INSTALL_DIR, INSTALL_CORE_PORT, INSTALL_DASHBOARD_PORT,
-# INSTALL_IMPORT_ENV, INSTALL_YES, INSTALL_HELP and INSTALL_UNINSTALL
-# (true/false) and
-# INSTALL_AGENTS (on for --with-agents, off for --no-agents, "" for
-# neither). Takes both "--flag value" and "--flag=value". An unknown flag,
-# a missing value, an invalid name or port, or both agent flags at once
-# prints why and the usage to stderr and returns 1. INSTALL_DIR defaults
-# from $HOME.
+# INSTALL_IMPORT_ENV, INSTALL_YES, INSTALL_HELP, INSTALL_UNINSTALL and
+# INSTALL_LOCALHOST_ONLY (true/false), INSTALL_AGENTS (on for
+# --with-agents, off for --no-agents, "" for neither), and
+# INSTALL_BIND_ADDRESS and INSTALL_PUBLIC_HOST ("" when not given; see
+# install_network_wanted, ADR-0277). Takes both "--flag value" and
+# "--flag=value". An unknown flag, a missing value, an invalid name, port,
+# bind address or public host, both agent flags at once, or network flags
+# that contradict each other (--localhost-only with --bind-address or
+# --public-host; a loopback --bind-address with --public-host) prints why
+# and the usage to stderr and returns 1. INSTALL_DIR defaults from $HOME.
 install_parse_args() {
   local flag value
   INSTALL_NAME=local
@@ -282,6 +359,9 @@ install_parse_args() {
   INSTALL_HELP=false
   INSTALL_UNINSTALL=false
   INSTALL_AGENTS=""
+  INSTALL_BIND_ADDRESS=""
+  INSTALL_PUBLIC_HOST=""
+  INSTALL_LOCALHOST_ONLY=false
   local agent_flag=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -300,6 +380,11 @@ install_parse_args() {
         shift
         continue
         ;;
+      --localhost-only)
+        INSTALL_LOCALHOST_ONLY=true
+        shift
+        continue
+        ;;
       --no-agents | --with-agents)
         if [ -n "$agent_flag" ] && [ "$agent_flag" != "$1" ]; then
           printf '%s and %s contradict each other -- pick one.\n\n' "$agent_flag" "$1" >&2
@@ -315,12 +400,12 @@ install_parse_args() {
         shift
         continue
         ;;
-      --name=* | --core-port=* | --dashboard-port=* | --import-env=* | --dir=*)
+      --name=* | --core-port=* | --dashboard-port=* | --import-env=* | --dir=* | --bind-address=* | --public-host=*)
         flag="${1%%=*}"
         value="${1#*=}"
         shift
         ;;
-      --name | --core-port | --dashboard-port | --import-env | --dir)
+      --name | --core-port | --dashboard-port | --import-env | --dir | --bind-address | --public-host)
         flag="$1"
         if [ "$#" -lt 2 ]; then
           value=""
@@ -366,10 +451,41 @@ install_parse_args() {
           INSTALL_DASHBOARD_PORT="$value"
         fi
         ;;
+      --bind-address)
+        if ! install_valid_ipv4 "$value"; then
+          printf 'Invalid --bind-address "%s": it must be an IPv4 address such as 0.0.0.0 (every interface) or 100.64.0.5 -- no host names, IPv6 or port.\n' "$value" >&2
+          return 1
+        fi
+        INSTALL_BIND_ADDRESS="$value"
+        ;;
+      --public-host)
+        if ! install_valid_public_host "$value"; then
+          printf 'Invalid --public-host "%s": give just a host name or IPv4 address, such as officemacbook.local or 192.168.1.20 -- no http://, port or path.\n' "$value" >&2
+          return 1
+        fi
+        INSTALL_PUBLIC_HOST="$value"
+        ;;
       --import-env) INSTALL_IMPORT_ENV="$value" ;;
       --dir) INSTALL_DIR="$value" ;;
     esac
   done
+  if [ "$INSTALL_LOCALHOST_ONLY" = true ]; then
+    if [ -n "$INSTALL_BIND_ADDRESS" ]; then
+      printf -- '--localhost-only and --bind-address contradict each other -- pick one.\n\n' >&2
+      install_usage >&2
+      return 1
+    fi
+    if [ -n "$INSTALL_PUBLIC_HOST" ]; then
+      printf -- '--localhost-only and --public-host contradict each other -- pick one.\n\n' >&2
+      install_usage >&2
+      return 1
+    fi
+  fi
+  if [ -n "$INSTALL_PUBLIC_HOST" ] && install_is_loopback "$INSTALL_BIND_ADDRESS"; then
+    printf -- '--bind-address %s and --public-host contradict each other -- pick one: %s keeps Fozzie on this machine only.\n\n' "$INSTALL_BIND_ADDRESS" "$INSTALL_BIND_ADDRESS" >&2
+    install_usage >&2
+    return 1
+  fi
   INSTALL_PROJECT="$(install_project_for_name "$INSTALL_NAME")"
   if [ -z "$INSTALL_DIR" ]; then
     if [ -z "${HOME:-}" ]; then
@@ -418,6 +534,85 @@ install_agents_wanted() {
     *) echo true ;;
   esac
   return 0
+}
+
+# Echoes "<bind> <host>": the address the dashboard's port binds to and
+# the public host name ("" for none) this install should use (ADR-0277).
+# FLAG_BIND and FLAG_HOST are INSTALL_BIND_ADDRESS and INSTALL_PUBLIC_HOST
+# (already validated), LOCALHOST_ONLY is INSTALL_LOCALHOST_ONLY. In order:
+#   --localhost-only: 127.0.0.1 and no host;
+#   bind: the flag, else EXISTING_ENV's FOZZIE_BIND_ADDRESS if it's still a
+#     valid IPv4 address, else 127.0.0.1;
+#   host: the flag, else EXISTING_ENV's FOZZIE_PUBLIC_HOST if still valid;
+#   a host with a loopback bind that wasn't given as a flag binds 0.0.0.0
+#     (--public-host alone, also on a re-run of a localhost-only install);
+#   a loopback bind clears the host (an explicit --bind-address 127.0.0.1).
+# Always returns 0.
+#   install_network_wanted EXISTING_ENV FLAG_BIND FLAG_HOST LOCALHOST_ONLY
+install_network_wanted() {
+  local existing="$1" flag_bind="$2" flag_host="$3" localhost_only="${4:-false}"
+  local bind host
+  if [ "$localhost_only" = true ]; then
+    echo "127.0.0.1 "
+    return 0
+  fi
+  bind="$flag_bind"
+  if [ -z "$bind" ]; then
+    bind="$(install_env_get "$existing" FOZZIE_BIND_ADDRESS)"
+    install_valid_ipv4 "$bind" || bind=127.0.0.1
+  fi
+  host="$flag_host"
+  if [ -z "$host" ]; then
+    host="$(install_env_get "$existing" FOZZIE_PUBLIC_HOST)"
+    install_valid_public_host "$host" || host=""
+  fi
+  if [ -n "$host" ] && install_is_loopback "$bind" && [ -z "$flag_bind" ]; then
+    bind=0.0.0.0
+  fi
+  if install_is_loopback "$bind"; then
+    host=""
+  fi
+  echo "$bind $host"
+  return 0
+}
+
+# Echoes "<dashboard_url> <core_public_url>" for BIND and HOST (from
+# install_network_wanted) and the final ports. The host links are built
+# from is HOST, else BIND when it's a specific non-loopback address (a
+# Tailscale 100.x bind with no --public-host), else none. With one, both
+# URLs are http://<host>:<DASH_PORT>: the dashboard proxies core-api's
+# browser and federation routes, and core-api's own port stays loopback.
+# With none, they're the localhost defaults docker-compose.yml falls back
+# to.
+#   install_public_urls BIND HOST DASH_PORT CORE_PORT
+install_public_urls() {
+  local bind="$1" host="$2" dash="$3" core="$4"
+  if [ -z "$host" ] && [ "$bind" != 0.0.0.0 ] && [ -n "$bind" ] && ! install_is_loopback "$bind"; then
+    host="$bind"
+  fi
+  if [ -n "$host" ]; then
+    echo "http://$host:$dash http://$host:$dash"
+  else
+    echo "http://localhost:$dash http://localhost:$core"
+  fi
+  return 0
+}
+
+# Prints the warning shown before the dashboard is opened to the network
+# (ADR-0277). install.sh prints it; tests check it.
+install_network_warning() {
+  cat <<'WARNING'
+WARNING: this opens Fozzie's dashboard to other devices on your network.
+  - It's plain HTTP: on a LAN, passwords, sign-in tokens and everything
+    else you send travel unencrypted, readable by anyone on that network.
+  - Beyond a trusted home network, use a private network such as
+    Tailscale (bind to its 100.x address with --bind-address) or put an
+    HTTPS reverse proxy in front instead.
+  - Never port-forward Fozzie to the internet.
+  - Only the dashboard's port is opened; core-api's stays on this machine.
+  - The default is localhost-only; re-run the installer with
+    --localhost-only to switch back.
+WARNING
 }
 
 # The image-ref regex for one service (core-api, dashboard, updater, agent
@@ -578,6 +773,10 @@ install_managed_value() {
     FOZZIE_INSTANCE_NAME) printf '%s\n' "$m_FOZZIE_INSTANCE_NAME" ;;
     FOZZIE_AGENTS_ENABLED) printf '%s\n' "$m_FOZZIE_AGENTS_ENABLED" ;;
     COMPOSE_PROFILES) printf '%s\n' "$m_COMPOSE_PROFILES" ;;
+    FOZZIE_BIND_ADDRESS) printf '%s\n' "$m_FOZZIE_BIND_ADDRESS" ;;
+    FOZZIE_PUBLIC_HOST) printf '%s\n' "$m_FOZZIE_PUBLIC_HOST" ;;
+    FOZZIE_DASHBOARD_URL) printf '%s\n' "$m_FOZZIE_DASHBOARD_URL" ;;
+    FOZZIE_CORE_PUBLIC_URL) printf '%s\n' "$m_FOZZIE_CORE_PUBLIC_URL" ;;
   esac
 }
 
@@ -604,19 +803,29 @@ install_managed_value() {
 #     no agent images, or pulling them failed) doesn't write
 #     FOZZIE_AGENTS_ENABLED=false, so the next release that can turns
 #     them back on.
+#   FOZZIE_BIND_ADDRESS, FOZZIE_PUBLIC_HOST (ADR-0277): flag, existing,
+#     then 127.0.0.1 with no host (install_network_wanted EXISTING
+#     FLAG_BIND_ADDRESS FLAG_PUBLIC_HOST LOCALHOST_ONLY); --localhost-only
+#     resets both. FOZZIE_BIND_ADDRESS is always written, FOZZIE_PUBLIC_HOST
+#     only when there is one;
+#   FOZZIE_DASHBOARD_URL, FOZZIE_CORE_PUBLIC_URL: always derived from those
+#     and the final ports (install_public_urls), never kept from the
+#     existing file, so a hand edit is overwritten on the next run.
 # The candidates are generated by the caller, so this stays deterministic.
 # Either file may be "" or missing. Returns 1, echoing why to stderr, when
 # a required value is missing or a value isn't safe to write unquoted.
 #   install_merge_env EXISTING IMPORT FLAG_CORE_PORT FLAG_DASHBOARD_PORT \
 #     NEW_GHCR_USERNAME NEW_GHCR_TOKEN CANDIDATE_PASSWORD CANDIDATE_KEY \
 #     CANDIDATE_UPDATER_TOKEN PROJECT DIR CANDIDATE_HEARTBEAT_SECRET NAME \
-#     FLAG_AGENTS AGENTS_AVAILABLE
+#     FLAG_AGENTS AGENTS_AVAILABLE FLAG_BIND_ADDRESS FLAG_PUBLIC_HOST \
+#     LOCALHOST_ONLY
 install_merge_env() {
   local existing="$1" import="$2" flag_core="$3" flag_dash="$4"
   local new_user="$5" new_token="$6" cand_password="$7" cand_key="$8" cand_updater="$9"
   local m_COMPOSE_PROJECT="${10:-}" m_FOZZIE_INSTALL_DIR="${11:-}"
   local cand_heartbeat="${12:-}" m_FOZZIE_INSTANCE_NAME="${13:-}"
   local flag_agents="${14:-}" agents_available="${15:-false}"
+  local flag_bind="${16:-}" flag_host="${17:-}" localhost_only="${18:-false}"
   local key value line emitted=" "
   local m_FOZZIE_VERSION="$LATEST_VERSION"
   local m_FOZZIE_CORE_API_IMAGE="$LATEST_CORE_API_IMAGE"
@@ -627,6 +836,7 @@ install_merge_env() {
   local m_POSTGRES_PASSWORD m_FOZZIE_ENCRYPTION_KEY m_FOZZIE_UPDATER_TOKEN
   local m_CORE_API_PORT m_DASHBOARD_PORT m_GHCR_USERNAME m_GHCR_TOKEN
   local m_FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET m_FOZZIE_AGENTS_ENABLED m_COMPOSE_PROFILES=""
+  local m_FOZZIE_BIND_ADDRESS m_FOZZIE_PUBLIC_HOST m_FOZZIE_DASHBOARD_URL m_FOZZIE_CORE_PUBLIC_URL
 
   m_POSTGRES_PASSWORD="$(install_env_get "$import" POSTGRES_PASSWORD)"
   [ -n "$m_POSTGRES_PASSWORD" ] || m_POSTGRES_PASSWORD="$(install_env_get "$existing" POSTGRES_PASSWORD)"
@@ -656,6 +866,9 @@ install_merge_env() {
   [ -n "$m_DASHBOARD_PORT" ] || m_DASHBOARD_PORT="$(install_env_get "$import" DASHBOARD_PORT)"
   [ -n "$m_DASHBOARD_PORT" ] || m_DASHBOARD_PORT="$(install_env_get "$existing" DASHBOARD_PORT)"
   [ -n "$m_DASHBOARD_PORT" ] || m_DASHBOARD_PORT=5173
+
+  read -r m_FOZZIE_BIND_ADDRESS m_FOZZIE_PUBLIC_HOST <<< "$(install_network_wanted "$existing" "$flag_bind" "$flag_host" "$localhost_only")"
+  read -r m_FOZZIE_DASHBOARD_URL m_FOZZIE_CORE_PUBLIC_URL <<< "$(install_public_urls "$m_FOZZIE_BIND_ADDRESS" "$m_FOZZIE_PUBLIC_HOST" "$m_DASHBOARD_PORT" "$m_CORE_API_PORT")"
 
   m_GHCR_USERNAME="$new_user"
   [ -n "$m_GHCR_USERNAME" ] || m_GHCR_USERNAME="$(install_env_get "$existing" GHCR_USERNAME)"
@@ -1477,6 +1690,26 @@ main() {
     confirm "Continue?" || die "Nothing changed."
   fi
 
+  # --- 5b. Network access (ADR-0277) -------------------------------------
+
+  # Opt-in: only the dashboard's port, and only with --public-host or
+  # --bind-address (remembered in .env after that). Warn whenever this run
+  # turns it on or changes where it listens; a re-run that keeps the same
+  # setting says nothing.
+  local NET_BIND NET_HOST prev_bind prev_host
+  read -r NET_BIND NET_HOST <<< "$(install_network_wanted "$ENV_FILE" "$INSTALL_BIND_ADDRESS" "$INSTALL_PUBLIC_HOST" "$INSTALL_LOCALHOST_ONLY")"
+  prev_bind="$(install_env_get "$ENV_FILE" FOZZIE_BIND_ADDRESS)"
+  [ -n "$prev_bind" ] || prev_bind=127.0.0.1
+  prev_host="$(install_env_get "$ENV_FILE" FOZZIE_PUBLIC_HOST)"
+  if ! install_is_loopback "$NET_BIND" &&
+    { install_is_loopback "$prev_bind" || [ "$NET_BIND" != "$prev_bind" ] || [ "$NET_HOST" != "$prev_host" ]; }; then
+    echo
+    install_network_warning
+    if [ "$INSTALL_YES" != true ] && have_tty; then
+      confirm "Open Fozzie's dashboard to your network?" || die "Nothing changed."
+    fi
+  fi
+
   # --- 6. docker-compose.yml and .env -----------------------------------
 
   # Written beside the real files and moved into place only once the
@@ -1493,7 +1726,8 @@ main() {
   merged="$(install_merge_env "$ENV_FILE" "$IMPORT_ENV" "$INSTALL_CORE_PORT" "$INSTALL_DASHBOARD_PORT" \
     "$NEW_GHCR_USERNAME" "$NEW_GHCR_TOKEN" \
     "$(openssl rand -hex 24)" "$(openssl rand -base64 32)" "$(openssl rand -hex 32)" \
-    "$PROJECT" "$DIR" "$(openssl rand -hex 32)" "$NAME" "$INSTALL_AGENTS" "$AGENTS_AVAILABLE")" ||
+    "$PROJECT" "$DIR" "$(openssl rand -hex 32)" "$NAME" "$INSTALL_AGENTS" "$AGENTS_AVAILABLE" \
+    "$INSTALL_BIND_ADDRESS" "$INSTALL_PUBLIC_HOST" "$INSTALL_LOCALHOST_ONLY")" ||
     die "Couldn't write $ENV_FILE."
   # Hex for new installs (see install_url_safe_password); this catches one
   # made by 0.1.0's installer, whose password can never work. Its database
@@ -1514,6 +1748,11 @@ main() {
   chmod 600 "$DIR/.env.tmp"
   CORE_API_PORT="$(install_env_get "$DIR/.env.tmp" CORE_API_PORT)"
   DASHBOARD_PORT="$(install_env_get "$DIR/.env.tmp" DASHBOARD_PORT)"
+  # Lowercase locals, not the .env keys' own names: a variable exported
+  # under one of those would reach docker compose and override .env.
+  local public_dashboard_url bind_address
+  public_dashboard_url="$(install_env_get "$DIR/.env.tmp" FOZZIE_DASHBOARD_URL)"
+  bind_address="$(install_env_get "$DIR/.env.tmp" FOZZIE_BIND_ADDRESS)"
 
   DC_FILE="$DIR/docker-compose.yml.tmp"
   DC_ENV="$DIR/.env.tmp"
@@ -1669,6 +1908,18 @@ main() {
   update_args="$(installer_args)"
 
   log "Fozzie $LATEST_VERSION (instance \"$NAME\") is running at http://localhost:$DASHBOARD_PORT"
+  if [ -n "$bind_address" ] && ! install_is_loopback "$bind_address"; then
+    case "$public_dashboard_url" in
+      "" | http://localhost:*)
+        echo "From other devices: http://$(hostname 2>/dev/null || echo "<this machine's name or IP>"):$DASHBOARD_PORT (add --public-host so emailed links use it)"
+        ;;
+      *)
+        echo "From other devices: $public_dashboard_url"
+        ;;
+    esac
+    echo "Plain HTTP, open to your network. Back to this machine only:"
+    echo "  curl -fsSL $FOZZIE_RELEASES_URL/install.sh | bash -s --$update_args --localhost-only"
+  fi
   echo
   if [ -n "$update_args" ]; then
     echo "Update:        curl -fsSL $FOZZIE_RELEASES_URL/install.sh | bash -s --$update_args"

@@ -2,8 +2,10 @@
 
 Thanks for testing Fozzie. This guide covers installing it, keeping it up
 to date, backups, running agents, and removing it again. Everything runs on your own
-machine in Docker, and nothing is reachable from outside it: every port
-listens on `localhost` only.
+machine in Docker. By default nothing is reachable from outside it: every
+port listens on `localhost` only. You can opt in to opening the dashboard
+to your network; see
+[Using Fozzie from another device](#using-fozzie-from-another-device).
 
 ## What you need
 
@@ -73,6 +75,49 @@ curl -fsSL https://functionberry.github.io/fozzie-releases/install.sh | bash -s 
 
 Later runs for that instance just need `--name second`: its ports are
 remembered. Run with `--help` to see every option.
+
+## Using Fozzie from another device
+
+By default Fozzie only answers on this computer. To open it from another
+device, such as a laptop or phone, re-run the installer with
+`--public-host` and this computer's name or IP address as other devices
+see it:
+
+```sh
+curl -fsSL https://functionberry.github.io/fozzie-releases/install.sh | bash -s -- --public-host officemacbook.local
+```
+
+Add `--name X` for a named instance. On the other device, open
+`http://<host>:<dashboard port>`, for example
+<http://officemacbook.local:5173>. Invite and password-reset emails use
+that address too.
+
+- `--public-host` on its own listens on every network interface
+  (`0.0.0.0`). To listen on just one, add `--bind-address <IP>`, for
+  example your Tailscale address (`tailscale ip -4` shows it; it starts
+  with `100.`). With `--bind-address` and no `--public-host`, links use
+  that IP.
+- Only the dashboard's port is opened. core-api's port (4000) stays on
+  this computer: the dashboard passes the browser's requests through to
+  it.
+- The choice is remembered: later runs of the installer and in-app
+  updates keep it.
+- `--localhost-only` switches back to this computer only.
+- Your computer's firewall may need to allow incoming connections on the
+  dashboard's port (5173 by default).
+
+> **Before you turn this on.** Fozzie is served over plain HTTP. On a
+> local network, your password, sign-in tokens and everything else you
+> send travel unencrypted, so anyone else on that network can read them.
+> Only use it on a trusted home network. Anywhere else, use a private
+> network such as [Tailscale](https://tailscale.com) (with
+> `--bind-address` set to its `100.x` address), or put an HTTPS reverse
+> proxy in front of Fozzie. **Never port-forward Fozzie to the
+> internet.** The default stays localhost-only, and `--localhost-only`
+> always takes you back to it.
+
+The installer shows the same warning, and asks before opening the port
+unless you passed `--yes`.
 
 ## Where things live
 
@@ -335,6 +380,18 @@ docker compose -p fozzie-local --env-file .env logs core-api
 
 The last lines usually say what went wrong. Send them to Mark if it isn't
 obvious.
+
+**Can't open it from another device.** Check that:
+
+- the device is on the same network (or the same Tailscale tailnet) as
+  this computer;
+- this computer's firewall allows incoming connections on the dashboard's
+  port;
+- you re-ran the installer with `--public-host` (see
+  [Using Fozzie from another device](#using-fozzie-from-another-device)):
+  its summary prints a "From other devices" address;
+- you used the dashboard's port (5173 by default), not 4000: core-api's
+  port is never opened to the network.
 
 **"Couldn't list models" for a model on your computer.** See
 [Using a local model (Ollama)](#using-a-local-model-ollama): use

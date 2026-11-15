@@ -11,7 +11,9 @@
 # FOZZIE_INSTALL_DIR for the updater. Re-running install.sh updates
 # everything; the updater service below does a one-click update of
 # core-api, dashboard and backup in place. Every port binds to the host's
-# own loopback interface only.
+# own loopback interface only, except that the dashboard's can be opened to
+# the network by opting in with the installer's --public-host /
+# --bind-address (ADR-0277). core-api's port never is.
 #
 # The orchestrator, which runs the agents created in the app (ADR-0215),
 # is in the "agents" profile. install.sh turns it on by default by
@@ -66,10 +68,13 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_FROM: ${SMTP_FROM:-}
-      # Links in invite emails, and federation callbacks, point back at
-      # this instance's own ports.
-      DASHBOARD_URL: http://localhost:${DASHBOARD_PORT:-5173}
-      FOZZIE_PUBLIC_URL: http://localhost:${CORE_API_PORT:-4000}
+      # Invite and reset emails, the git help link, supervisor links and
+      # federation callbacks all use these URLs. The installer writes them
+      # (ADR-0277); with a public host both are the dashboard's address,
+      # because the dashboard proxies core-api's browser and federation
+      # routes. The fallbacks keep an older .env rendering as before.
+      DASHBOARD_URL: ${FOZZIE_DASHBOARD_URL:-http://localhost:${DASHBOARD_PORT:-5173}}
+      FOZZIE_PUBLIC_URL: ${FOZZIE_CORE_PUBLIC_URL:-http://localhost:${CORE_API_PORT:-4000}}
       FOZZIE_FEDERATION_SYNC_INTERVAL_MS: ${FOZZIE_FEDERATION_SYNC_INTERVAL_MS:-60000}
       FOZZIE_ARCHIVE_SWEEP_INTERVAL_MS: ${FOZZIE_ARCHIVE_SWEEP_INTERVAL_MS:-}
       FOZZIE_BRANCH_SWEEP_INTERVAL_MS: ${FOZZIE_BRANCH_SWEEP_INTERVAL_MS:-}
@@ -129,6 +134,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # Always loopback, even when the dashboard is opened to the network
+    # (ADR-0277): only install.sh's health check and the host-side CLI and
+    # agents use it -- the browser goes through the dashboard's proxy.
     ports:
       - "127.0.0.1:${CORE_API_PORT:-4000}:4000"
     extra_hosts:
@@ -146,13 +154,22 @@ services:
   dashboard:
     image: ${FOZZIE_DASHBOARD_IMAGE:?Run install.sh -- it sets FOZZIE_DASHBOARD_IMAGE in .env}
     environment:
-      # Read at container start. The browser, not the Compose network,
-      # talks to this URL, so it's core-api's host port.
-      GRAPHQL_URL: http://localhost:${CORE_API_PORT:-4000}/graphql
+      # Empty by default: the dashboard then uses the relative /graphql and
+      # its own server proxies /graphql, /attachments, /repo-files, /gates
+      # and /git (never /internal) to core-api over the Compose network, at
+      # FOZZIE_CORE_API_UPSTREAM (default http://core-api:4000). The browser
+      # talks to the dashboard's origin only, whatever host name or IP it
+      # used, so core-api's own host port is never needed by the browser
+      # (ADR-0172 decision 3, amended 2026-11-14). Set GRAPHQL_URL in .env
+      # only to point the browser at a core-api on another origin; it's
+      # read at container start.
+      GRAPHQL_URL: ${GRAPHQL_URL:-}
     depends_on:
       - core-api
+    # Loopback unless opted in with the installer's --public-host or
+    # --bind-address, which set FOZZIE_BIND_ADDRESS (ADR-0277).
     ports:
-      - "127.0.0.1:${DASHBOARD_PORT:-5173}:5173"
+      - "${FOZZIE_BIND_ADDRESS:-127.0.0.1}:${DASHBOARD_PORT:-5173}:5173"
     restart: unless-stopped
 
   # A backup of the database, git repos and attachments every
