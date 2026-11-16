@@ -78,6 +78,7 @@ services:
       FOZZIE_FEDERATION_SYNC_INTERVAL_MS: ${FOZZIE_FEDERATION_SYNC_INTERVAL_MS:-60000}
       FOZZIE_ARCHIVE_SWEEP_INTERVAL_MS: ${FOZZIE_ARCHIVE_SWEEP_INTERVAL_MS:-}
       FOZZIE_BRANCH_SWEEP_INTERVAL_MS: ${FOZZIE_BRANCH_SWEEP_INTERVAL_MS:-}
+      FOZZIE_REPORT_FORECAST_SNAPSHOT_INTERVAL_MS: ${FOZZIE_REPORT_FORECAST_SNAPSHOT_INTERVAL_MS:-}
       FOZZIE_AUTO_COMPLETE_INTERVAL_MS: ${FOZZIE_AUTO_COMPLETE_INTERVAL_MS:-}
       FOZZIE_MERGE_TEST_GATE: ${FOZZIE_MERGE_TEST_GATE:-warn}
       FOZZIE_UI_TEST_GATE: ${FOZZIE_UI_TEST_GATE:-warn}
@@ -106,6 +107,18 @@ services:
       FOZZIE_REPO_IMPORT_TIMEOUT_SECONDS: ${FOZZIE_REPO_IMPORT_TIMEOUT_SECONDS:-}
       FOZZIE_REPO_IMPORT_MAX_CONCURRENT: ${FOZZIE_REPO_IMPORT_MAX_CONCURRENT:-}
       FOZZIE_REPO_IMPORT_ALLOW_PRIVATE_NETWORKS: ${FOZZIE_REPO_IMPORT_ALLOW_PRIVATE_NETWORKS:-}
+      # Sign-in limits (ADR-0280): failed logins per client IP and per
+      # email in each window, and "Forgot password?" requests per IP per
+      # hour. Empty means the defaults: 50, 10, 15 minutes and 10.
+      FOZZIE_LOGIN_FAILURES_PER_IP: ${FOZZIE_LOGIN_FAILURES_PER_IP:-}
+      FOZZIE_LOGIN_FAILURES_PER_EMAIL: ${FOZZIE_LOGIN_FAILURES_PER_EMAIL:-}
+      FOZZIE_LOGIN_RATE_WINDOW_MINUTES: ${FOZZIE_LOGIN_RATE_WINDOW_MINUTES:-}
+      FOZZIE_PASSWORD_RESET_REQUESTS_PER_IP: ${FOZZIE_PASSWORD_RESET_REQUESTS_PER_IP:-}
+      # Rate-limit by the last X-Forwarded-For entry (ADR-0280). Safe only
+      # here: core-api's port is bound to loopback below, so a remote
+      # browser can only arrive through the dashboard's proxy, which
+      # appends its own socket peer to the header.
+      FOZZIE_TRUST_FORWARDED_FOR: "true"
       # Lets the orchestrator below post its heartbeat (ADR-0201), so the
       # app can show whether the agent service is running. install.sh
       # generates it once, agents on or off, and hands the same value to
@@ -177,7 +190,11 @@ services:
   # BACKUP_RETAIN_COUNT (default 14), in the fozzie_backups_local volume.
   # Same image as core-api. $$ escapes Compose's own interpolation, so
   # the container's shell reads BACKUP_INTERVAL_SECONDS from its own
-  # environment below. Take one now with
+  # environment below. The first backup waits until core-api is healthy
+  # at this image's version (capped by BACKUP_WAIT_FOR_CORE_API_SECONDS,
+  # default 900, then it backs up anyway), so pg_dump never holds locks
+  # while core-api migrates on start after an update (ADR-0139). Take one
+  # now -- this doesn't wait -- with
   #   docker compose ... run --rm backup node dist/backupCli.js run
   # and list them with `... node dist/backupCli.js list`.
   backup:
@@ -197,7 +214,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    command: sh -c 'while true; do node dist/backupCli.js run; sleep "$$BACKUP_INTERVAL_SECONDS"; done'
+    command: sh -c 'node dist/backupCli.js wait-for-core-api; while true; do node dist/backupCli.js run; sleep "$$BACKUP_INTERVAL_SECONDS"; done'
     restart: unless-stopped
 
   # One-click updates (ADR-0172 decisions 10 and 11, docker/updater/

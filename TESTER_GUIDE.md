@@ -167,6 +167,8 @@ that this install's compose file is out of date.
 Fozzie backs itself up daily and keeps the newest 14 backups, in the
 `fozzie_backups_local` Docker volume. The installer also takes one before
 every update.
+Settings → Backups shows when the last one ran, and whether a later one
+failed (admins only).
 
 Run these from `~/fozzie` (or `~/fozzie-<name>`, with `-p fozzie-<name>`):
 

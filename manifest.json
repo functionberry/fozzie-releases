@@ -1,7 +1,23 @@
 {
   "schema": 1,
-  "latest": "0.1.10",
+  "latest": "0.1.11",
   "releases": [
+    {
+      "version": "0.1.11",
+      "publishedAt": "2026-11-16T04:18:41.880Z",
+      "minUpgradableFrom": "0.1.0",
+      "lastMigration": "20261122120000_report_forecast_history",
+      "notes": "Approvals never stall: steps fall back to the nearest human (then an admin) when there's no team, and assigning one to its PR's agent author is refused with a clear message. Roles, first example: Federation admins and User admins, plus consent for federation sharing. Reports rebuilt: a calculated forecast (likely and probably-by dates) from team throughput, finished peers and scope growth, a new Report tab with a status card, and daily forecast history. Fresh installs start with a team, Create Agent picks a team, new Welcome and Work with code onboarding tracks, and a Settings → Backups page. Updates are safer: migrations wait for a running backup instead of timing out, backups wait for core-api to be healthy, and a failed update keeps core-api's log.\n\n- Updater: keep core-api's last log lines in the RollingBack report\n- The scheduled backup waits for core-api to be healthy before its first dump\n- Exempt migrations from the role's 5 s statement_timeout; log lock waits\n- Supervisor cadence from its task's recurrence; plain-language, linked escalations\n- Report tab: per-report Forecast method selector and read-only child reports\n- A fresh install starts with a team: createFirstRunTeam at sign-up, Team name field, Get started team step first (ADR-0291)\n- Create Agent picks a team: createAgent(teamId) puts the new agent in it by containment\n- Reports slice 3 part 3: peer growth factor applied to started children under COMBINED\n- Reports slice 3 part 2: same-parent peer estimates (PEER/COMBINED) and per-report peer exclusion\n- assignWork refuses an approval step's agent author instead of silently rerouting (ADR-0261)\n- Federation sharing needs augment on the shared entity (consent)\n- Scope history: leaf counts as the tree stood at past instants\n- Approval falls back to a human when no team resolves (ADR-0211)\n- Report updates: calculated forecast snapshot, no manual status (ADR-0288)\n- Team header: show any team's home in Work, with Choose/Change home\n- Give nextWorkAgreement tests a 30s timeout for full-suite load\n- Backup status recorded in the database, shown on Settings → Backups (ADR-0286)\n- Welcome track for invited members\n- Trust X-Forwarded-For only when FOZZIE_TRUST_FORWARDED_FOR is set; drop no-op VM limit settings\n- Stop the Completed tabs' 5s whole-tree poll and cache the work-tree snapshot (P3)\n- Archiving a participant cuts off their access (ADR-0279)\n- Rollback restores Postgres when the migration set changes, not lastMigration\n- Rollups lock the parent; consistency check repairs derived-data drift (ADR-0278)\n",
+      "images": {
+        "core-api": "ghcr.io/functionberry/fozzie-dist-core-api@sha256:c5590d26568bbdc9ac35350889d883568a774619d6c106e528d0f0e72f7d874a",
+        "dashboard": "ghcr.io/functionberry/fozzie-dist-dashboard@sha256:3b458a916ff15298cd6bff0871d55830e0a713b3ed0bd448b33c81480701b1f2",
+        "updater": "ghcr.io/functionberry/fozzie-dist-updater@sha256:22da3e8f9da6cd688411934d52d0560f2d8142f99ed4ea8c41ee98b63982fbf0",
+        "agent": "ghcr.io/functionberry/fozzie-dist-agent@sha256:329be2131bd5647ed8ff8e3c9b9017e0d16af40001713f9b03d0d87b1c15385d",
+        "orchestrator": "ghcr.io/functionberry/fozzie-dist-orchestrator@sha256:e496214ca8636de021ae158012bf6d0b6d0d46a4d9de25f273193b21a80a08a4"
+      },
+      "composeSha256": "8ecb956c42eaa60d838eb830882ba4d5560cbc1d18b36e92294c2090a1e73ddf",
+      "migrationsSha256": "8f29ffb21258726873f0cd4e5f63819936cee822643a368d959df5d902231ab1"
+    },
     {
       "version": "0.1.10",
       "publishedAt": "2026-11-15T00:00:03.597Z",
