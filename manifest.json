@@ -1,7 +1,23 @@
 {
   "schema": 1,
-  "latest": "0.1.11",
+  "latest": "0.1.12",
   "releases": [
+    {
+      "version": "0.1.12",
+      "publishedAt": "2026-11-18T03:57:27.580Z",
+      "minUpgradableFrom": "0.1.0",
+      "lastMigration": "20261124120000_ai_usage_participant_index",
+      "notes": "Fixes for testers: the inbox shows only what someone else needs from you; Needs attention and an opt-in agent that watches for stuck work; the Work as a team and Run your instance onboarding tracks; federation works across machines (real addresses, refused localhost mismatches, addresses that correct themselves on sync); copy buttons work over your network; agent Queue tab sections; accessible confirm dialogs and selects; agent costs that account for prompt caching; a Merge button for people; and safer attachment handling.\n\n- Federation: a partner's address heals on sync, and admins can set it by hand\n- AI profile form: cache-read/cache-write prices with Anthropic defaults shown\n- Refuse a loopback/non-loopback federation handshake; show this instance's address on the Federation page\n- Maintainer instance: install --public-host advertises a real address\n- People can mark a whole task Won't do in one action (ADR-0301)\n- Cache-aware AI usage pricing: stop double-charging cache reads\n- Dashboard: copy buttons work over plain http, and say so when they can't\n- Inbox shows only direct assignments made by others (ADR-0300)\n- Dashboard: searchable comboboxes for the long-list native selects (part 2 of 3)\n- Dashboard: shared Select (Radix) replaces the six short/fixed native selects\n- Agent Queue tab: In progress, Ready and Waiting (ADR-0297)\n- Coding template: don't change the UI runner's guarded infra files for new settings\n- Make passwordResetRequest per-IP trip assertion deterministic\n- Structured permission denials: FORBIDDEN extensions with userMessage, requirement and readable admins (ADR-0296)\n- consistencyCheck tests: explicit 30s timeout on the git-heavy ADR-0131 cases\n- Query.viewerCapabilities: which instance-level surfaces the viewer can act on (ADR-0295)\n- test.sh: pin a fixture repo id for the run_self_check core-suite block\n- Declared test command: .fozzie/test.json with a repository-setting fallback (ADR-0294)\n- Entity cards: underline the name link at rest, make the breadcrumb clearly secondary\n- recordMerge refuses out-of-order migration timestamps (ADR-0293)\n- Run your instance: seventh step \"Let an agent watch for stuck work\" (supervisor-assigned check)\n- Make the renamed invite_invited_by_index migration idempotent\n- Create agent dialog: opt-in \"Also let this agent watch for stuck work\" checkbox\n- Needs attention: Assign and Move to ideas quick actions with Undo toasts\n- Give teamCompletedWorkE2eFixtures tests a 30s timeout for full-suite load\n- Agent page and Done step: one-click \"Let <agent> watch for stuck work\" with a tier-aware recommendation\n- Work as a team: a real onboarding track with four new auto-complete checks\n- Needs attention: per-row quick actions (primary control + actions menu, Reset attempts and Won't do)\n- Dashboard: Home \"N items need attention\" banner and Sidebar count badge\n- Agent page: \"Supervising stalled work\" row with How often / Stop / Hand off for admins\n- Serve attachments safely: nosniff, sandbox CSP, download for active types\n- Agent page: notice for a teamless agent with one-click Add to team\n- Dashboard: read-only Needs attention page (stalled work grouped by kind and task)\n- Report status card: list peers with growth, per-peer exclusion, and the remaining breakdown\n",
+      "images": {
+        "core-api": "ghcr.io/functionberry/fozzie-dist-core-api@sha256:9bf828b5bd4cb80f285eea11dec22f43048e51bc53a8f662cf8af7e85caa4871",
+        "dashboard": "ghcr.io/functionberry/fozzie-dist-dashboard@sha256:b6899475bdca46e11097cef8cdd3008be05b4bbb9b4b330a6345a6d00753cf8f",
+        "updater": "ghcr.io/functionberry/fozzie-dist-updater@sha256:9b9f83f8a4f32763ec16d7036c665cc82a694ebd286e75d2203cd24a63fae4f2",
+        "agent": "ghcr.io/functionberry/fozzie-dist-agent@sha256:b16045c1074a4b4883f32d8e0a56c8c4a2c116b63c4e36afbee391f9e66fe1ff",
+        "orchestrator": "ghcr.io/functionberry/fozzie-dist-orchestrator@sha256:1680d98ed753e557d6230cd0edf9ec099f78e9b9d824e23d73dab7f79959848a"
+      },
+      "composeSha256": "8ecb956c42eaa60d838eb830882ba4d5560cbc1d18b36e92294c2090a1e73ddf",
+      "migrationsSha256": "988237ece3b116173bcf149375aa44b1533fdd3ccd36038eb6f2cc040fb5143f"
+    },
     {
       "version": "0.1.11",
       "publishedAt": "2026-11-16T04:18:41.880Z",
