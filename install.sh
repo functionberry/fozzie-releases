@@ -12,6 +12,11 @@
 # The agent service runs by default (ADR-0215). --no-agents turns it off,
 # and later runs remember that; --with-agents turns it back on.
 #
+# On a server with a domain name pointing at it: --domain HOST serves
+# Fozzie at https://HOST through a Caddy container on ports 80 and 443,
+# with automatic Let's Encrypt certificates (ADR-0277's 2026-11-19
+# amendment). Later runs remember it; --no-domain switches back.
+#
 # Switching an instance installed from source to these images, keeping
 # its data: --import-env <its env file> takes its secrets and ports.
 # `--help` lists every option.
@@ -171,11 +176,12 @@ INSTALL_GHCR_TOKEN_REGEX="^[${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}_]+
 
 # Every value the installer writes into .env is from this set, so it's
 # written unquoted and reads back the same to Compose and to
-# install_env_get alike (base64 secrets, digest refs, ports, versions).
-INSTALL_ENV_VALUE_REGEX="^[${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}+/=._:@-]+\$"
+# install_env_get alike (base64 secrets, digest refs, ports, versions,
+# and COMPOSE_PROFILES's comma-separated list).
+INSTALL_ENV_VALUE_REGEX="^[${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}+/=._:@,-]+\$"
 
 # The keys install_merge_env owns, in the order it appends them.
-INSTALL_MANAGED_KEYS="FOZZIE_VERSION FOZZIE_CORE_API_IMAGE FOZZIE_DASHBOARD_IMAGE FOZZIE_UPDATER_IMAGE POSTGRES_PASSWORD FOZZIE_ENCRYPTION_KEY FOZZIE_UPDATER_TOKEN CORE_API_PORT DASHBOARD_PORT GHCR_USERNAME GHCR_TOKEN COMPOSE_PROJECT FOZZIE_INSTALL_DIR FOZZIE_AGENT_IMAGE FOZZIE_ORCHESTRATOR_IMAGE FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET FOZZIE_INSTANCE_NAME FOZZIE_AGENTS_ENABLED COMPOSE_PROFILES FOZZIE_BIND_ADDRESS FOZZIE_PUBLIC_HOST FOZZIE_DASHBOARD_URL FOZZIE_CORE_PUBLIC_URL"
+INSTALL_MANAGED_KEYS="FOZZIE_VERSION FOZZIE_CORE_API_IMAGE FOZZIE_DASHBOARD_IMAGE FOZZIE_UPDATER_IMAGE POSTGRES_PASSWORD FOZZIE_ENCRYPTION_KEY FOZZIE_UPDATER_TOKEN CORE_API_PORT DASHBOARD_PORT GHCR_USERNAME GHCR_TOKEN COMPOSE_PROJECT FOZZIE_INSTALL_DIR FOZZIE_AGENT_IMAGE FOZZIE_ORCHESTRATOR_IMAGE FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET FOZZIE_INSTANCE_NAME FOZZIE_AGENTS_ENABLED COMPOSE_PROFILES FOZZIE_BIND_ADDRESS FOZZIE_PUBLIC_HOST FOZZIE_DASHBOARD_URL FOZZIE_CORE_PUBLIC_URL FOZZIE_DOMAIN FOZZIE_TRUSTED_PROXY_HOPS"
 
 INSTALL_ENV_HEADER="# Managed by the Fozzie installer: it rewrites the keys it manages on every run and keeps every other line. Holds secrets -- keep it private."
 
@@ -221,6 +227,16 @@ Options:
                           remembered by later runs and updates. Plain HTTP:
                           read "Using Fozzie from another device" in the
                           tester guide first.
+  --domain HOST           Serve Fozzie at https://HOST, with automatic Let's
+                          Encrypt certificates, through a Caddy container
+                          on ports 80 and 443. Those ports must be free and
+                          reachable from the internet, and HOST's DNS A
+                          record must point at this machine. The dashboard
+                          and core-api stay on 127.0.0.1. Remembered by
+                          later runs and updates.
+  --no-domain             Stop serving at the domain: removes the Caddy
+                          container (keeping its certificates) and goes
+                          back to this machine only.
   --uninstall             Remove this instance: asks whether to keep its data
                           (and .env, which that data needs) or delete
                           everything. Needs a terminal; --yes doesn't skip it.
@@ -317,6 +333,26 @@ install_valid_public_host() {
   ! [[ "$label" =~ $INSTALL_ALL_DIGITS_REGEX ]]
 }
 
+# True (0) iff host is what --domain takes: a public DNS name Let's
+# Encrypt can issue a certificate for. It passes install_valid_public_host,
+# isn't an IPv4 address, has at least one dot, and isn't localhost,
+# *.localhost or *.local (mDNS names never resolve publicly). Compared
+# case-insensitively; install_parse_args stores it lowercased.
+install_valid_domain() {
+  local host
+  host="$(install_lower "$1")"
+  install_valid_public_host "$host" || return 1
+  install_valid_ipv4 "$host" && return 1
+  case "$host" in
+    *.*) ;;
+    *) return 1 ;;
+  esac
+  case "$host" in
+    localhost | *.localhost | *.local) return 1 ;;
+  esac
+  return 0
+}
+
 # The Compose project for an instance name: fozzie-<name>, so the default
 # "local" instance is fozzie-local -- the same as the source-built
 # install's.
@@ -341,12 +377,16 @@ install_default_dir() {
 # INSTALL_LOCALHOST_ONLY (true/false), INSTALL_AGENTS (on for
 # --with-agents, off for --no-agents, "" for neither), and
 # INSTALL_BIND_ADDRESS and INSTALL_PUBLIC_HOST ("" when not given; see
-# install_network_wanted, ADR-0277). Takes both "--flag value" and
-# "--flag=value". An unknown flag, a missing value, an invalid name, port,
-# bind address or public host, both agent flags at once, or network flags
-# that contradict each other (--localhost-only with --bind-address or
-# --public-host; a loopback --bind-address with --public-host) prints why
-# and the usage to stderr and returns 1. INSTALL_DIR defaults from $HOME.
+# install_network_wanted, ADR-0277), INSTALL_DOMAIN (--domain, lowercased,
+# "" when not given) and INSTALL_NO_DOMAIN (true/false; see
+# install_domain_wanted, ADR-0277's 2026-11-19 amendment). Takes both
+# "--flag value" and "--flag=value". An unknown flag, a missing value, an
+# invalid name, port, bind address, public host or domain, both agent
+# flags at once, or network flags that contradict each other
+# (--localhost-only with --bind-address or --public-host; a loopback
+# --bind-address with --public-host; --domain with --no-domain,
+# --localhost-only, --bind-address or --public-host) prints why and the
+# usage to stderr and returns 1. INSTALL_DIR defaults from $HOME.
 install_parse_args() {
   local flag value
   INSTALL_NAME=local
@@ -362,6 +402,8 @@ install_parse_args() {
   INSTALL_BIND_ADDRESS=""
   INSTALL_PUBLIC_HOST=""
   INSTALL_LOCALHOST_ONLY=false
+  INSTALL_DOMAIN=""
+  INSTALL_NO_DOMAIN=false
   local agent_flag=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -385,6 +427,11 @@ install_parse_args() {
         shift
         continue
         ;;
+      --no-domain)
+        INSTALL_NO_DOMAIN=true
+        shift
+        continue
+        ;;
       --no-agents | --with-agents)
         if [ -n "$agent_flag" ] && [ "$agent_flag" != "$1" ]; then
           printf '%s and %s contradict each other -- pick one.\n\n' "$agent_flag" "$1" >&2
@@ -400,12 +447,12 @@ install_parse_args() {
         shift
         continue
         ;;
-      --name=* | --core-port=* | --dashboard-port=* | --import-env=* | --dir=* | --bind-address=* | --public-host=*)
+      --name=* | --core-port=* | --dashboard-port=* | --import-env=* | --dir=* | --bind-address=* | --public-host=* | --domain=*)
         flag="${1%%=*}"
         value="${1#*=}"
         shift
         ;;
-      --name | --core-port | --dashboard-port | --import-env | --dir | --bind-address | --public-host)
+      --name | --core-port | --dashboard-port | --import-env | --dir | --bind-address | --public-host | --domain)
         flag="$1"
         if [ "$#" -lt 2 ]; then
           value=""
@@ -465,6 +512,13 @@ install_parse_args() {
         fi
         INSTALL_PUBLIC_HOST="$value"
         ;;
+      --domain)
+        if ! install_valid_domain "$value"; then
+          printf 'Invalid --domain "%s": give a public DNS name such as app.example.com -- not an IP address, localhost, http:// or a port.\n' "$value" >&2
+          return 1
+        fi
+        INSTALL_DOMAIN="$(install_lower "$value")"
+        ;;
       --import-env) INSTALL_IMPORT_ENV="$value" ;;
       --dir) INSTALL_DIR="$value" ;;
     esac
@@ -485,6 +539,23 @@ install_parse_args() {
     printf -- '--bind-address %s and --public-host contradict each other -- pick one: %s keeps Fozzie on this machine only.\n\n' "$INSTALL_BIND_ADDRESS" "$INSTALL_BIND_ADDRESS" >&2
     install_usage >&2
     return 1
+  fi
+  if [ -n "$INSTALL_DOMAIN" ]; then
+    flag=""
+    if [ "$INSTALL_NO_DOMAIN" = true ]; then
+      flag=--no-domain
+    elif [ "$INSTALL_LOCALHOST_ONLY" = true ]; then
+      flag=--localhost-only
+    elif [ -n "$INSTALL_BIND_ADDRESS" ]; then
+      flag=--bind-address
+    elif [ -n "$INSTALL_PUBLIC_HOST" ]; then
+      flag=--public-host
+    fi
+    if [ -n "$flag" ]; then
+      printf -- '--domain and %s contradict each other -- pick one.\n\n' "$flag" >&2
+      install_usage >&2
+      return 1
+    fi
   fi
   INSTALL_PROJECT="$(install_project_for_name "$INSTALL_NAME")"
   if [ -z "$INSTALL_DIR" ]; then
@@ -536,33 +607,78 @@ install_agents_wanted() {
   return 0
 }
 
+# Echoes the domain this install should serve at over HTTPS through the
+# caddy service (ADR-0277's 2026-11-19 amendment), or "" for none.
+# FLAG_DOMAIN is INSTALL_DOMAIN (already validated and lowercased),
+# NO_DOMAIN is INSTALL_NO_DOMAIN, and OTHER_NET_FLAG is true when this run
+# gave --localhost-only, --bind-address or --public-host. In order:
+#   --domain: that domain;
+#   --no-domain, or any other network flag (each replaces the domain
+#     setup): none;
+#   otherwise EXISTING_ENV's FOZZIE_DOMAIN if it's still valid, so a
+#     re-run without --domain keeps it (and in-app updates never rewrite
+#     it).
+# Always returns 0.
+#   install_domain_wanted EXISTING_ENV FLAG_DOMAIN NO_DOMAIN OTHER_NET_FLAG
+install_domain_wanted() {
+  local existing="$1" flag_domain="$2" no_domain="${3:-false}" other_net="${4:-false}"
+  local domain
+  if [ -n "$flag_domain" ]; then
+    echo "$flag_domain"
+    return 0
+  fi
+  if [ "$no_domain" = true ] || [ "$other_net" = true ]; then
+    echo ""
+    return 0
+  fi
+  domain="$(install_lower "$(install_env_get "$existing" FOZZIE_DOMAIN)")"
+  install_valid_domain "$domain" || domain=""
+  echo "$domain"
+  return 0
+}
+
 # Echoes "<bind> <host>": the address the dashboard's port binds to and
 # the public host name ("" for none) this install should use (ADR-0277).
 # FLAG_BIND and FLAG_HOST are INSTALL_BIND_ADDRESS and INSTALL_PUBLIC_HOST
-# (already validated), LOCALHOST_ONLY is INSTALL_LOCALHOST_ONLY. In order:
+# (already validated), LOCALHOST_ONLY is INSTALL_LOCALHOST_ONLY, and
+# DOMAIN is install_domain_wanted's answer ("" or absent for none). In
+# order:
+#   a domain: 127.0.0.1 and the domain -- only Caddy listens publicly;
 #   --localhost-only: 127.0.0.1 and no host;
 #   bind: the flag, else EXISTING_ENV's FOZZIE_BIND_ADDRESS if it's still a
 #     valid IPv4 address, else 127.0.0.1;
 #   host: the flag, else EXISTING_ENV's FOZZIE_PUBLIC_HOST if still valid;
+#   but when EXISTING_ENV has a FOZZIE_DOMAIN (and DOMAIN is now ""), its
+#     FOZZIE_BIND_ADDRESS and FOZZIE_PUBLIC_HOST were derived from that
+#     domain and are ignored -- otherwise --no-domain would open the
+#     dashboard to the network over plain HTTP at the domain's name;
 #   a host with a loopback bind that wasn't given as a flag binds 0.0.0.0
 #     (--public-host alone, also on a re-run of a localhost-only install);
 #   a loopback bind clears the host (an explicit --bind-address 127.0.0.1).
 # Always returns 0.
-#   install_network_wanted EXISTING_ENV FLAG_BIND FLAG_HOST LOCALHOST_ONLY
+#   install_network_wanted EXISTING_ENV FLAG_BIND FLAG_HOST LOCALHOST_ONLY [DOMAIN]
 install_network_wanted() {
-  local existing="$1" flag_bind="$2" flag_host="$3" localhost_only="${4:-false}"
-  local bind host
+  local existing="$1" flag_bind="$2" flag_host="$3" localhost_only="${4:-false}" domain="${5:-}"
+  local bind host from_domain=false
+  if [ -n "$domain" ]; then
+    echo "127.0.0.1 $domain"
+    return 0
+  fi
   if [ "$localhost_only" = true ]; then
     echo "127.0.0.1 "
     return 0
   fi
+  [ -z "$(install_env_get "$existing" FOZZIE_DOMAIN)" ] || from_domain=true
   bind="$flag_bind"
   if [ -z "$bind" ]; then
-    bind="$(install_env_get "$existing" FOZZIE_BIND_ADDRESS)"
-    install_valid_ipv4 "$bind" || bind=127.0.0.1
+    bind=127.0.0.1
+    if [ "$from_domain" != true ]; then
+      bind="$(install_env_get "$existing" FOZZIE_BIND_ADDRESS)"
+      install_valid_ipv4 "$bind" || bind=127.0.0.1
+    fi
   fi
   host="$flag_host"
-  if [ -z "$host" ]; then
+  if [ -z "$host" ] && [ "$from_domain" != true ]; then
     host="$(install_env_get "$existing" FOZZIE_PUBLIC_HOST)"
     install_valid_public_host "$host" || host=""
   fi
@@ -577,16 +693,22 @@ install_network_wanted() {
 }
 
 # Echoes "<dashboard_url> <core_public_url>" for BIND and HOST (from
-# install_network_wanted) and the final ports. The host links are built
-# from is HOST, else BIND when it's a specific non-loopback address (a
-# Tailscale 100.x bind with no --public-host), else none. With one, both
-# URLs are http://<host>:<DASH_PORT>: the dashboard proxies core-api's
-# browser and federation routes, and core-api's own port stays loopback.
-# With none, they're the localhost defaults docker-compose.yml falls back
-# to.
-#   install_public_urls BIND HOST DASH_PORT CORE_PORT
+# install_network_wanted) and the final ports. With a DOMAIN, both are
+# https://<domain>, no port: Caddy serves 443 and forwards to the
+# dashboard, which proxies core-api's browser, federation and git routes.
+# Otherwise the host links are built from is HOST, else BIND when it's a
+# specific non-loopback address (a Tailscale 100.x bind with no
+# --public-host), else none. With one, both URLs are
+# http://<host>:<DASH_PORT>, for the same reason, and core-api's own port
+# stays loopback. With none, they're the localhost defaults
+# docker-compose.yml falls back to.
+#   install_public_urls BIND HOST DASH_PORT CORE_PORT [DOMAIN]
 install_public_urls() {
-  local bind="$1" host="$2" dash="$3" core="$4"
+  local bind="$1" host="$2" dash="$3" core="$4" domain="${5:-}"
+  if [ -n "$domain" ]; then
+    echo "https://$domain https://$domain"
+    return 0
+  fi
   if [ -z "$host" ] && [ "$bind" != 0.0.0.0 ] && [ -n "$bind" ] && ! install_is_loopback "$bind"; then
     host="$bind"
   fi
@@ -613,6 +735,51 @@ WARNING: this opens Fozzie's dashboard to other devices on your network.
   - The default is localhost-only; re-run the installer with
     --localhost-only to switch back.
 WARNING
+}
+
+# Prints the notice shown before --domain turns on (or changes) HTTPS
+# serving through Caddy (ADR-0277's 2026-11-19 amendment). install.sh
+# prints it; tests check it.
+install_domain_notice() {
+  cat <<'NOTICE'
+NOTICE: this serves Fozzie on the internet, over HTTPS.
+  - It opens ports 80 and 443 to the internet. Caddy gets and renews a
+    certificate from Let's Encrypt by itself, and redirects HTTP to HTTPS.
+  - Only Caddy listens publicly: the dashboard and core-api stay on
+    127.0.0.1.
+  - The domain's DNS A record must point at this machine, and ports 80
+    and 443 must be allowed in your cloud provider's firewall (security
+    list) and in the server's own firewall.
+  - Re-run the installer with --no-domain to switch back.
+NOTICE
+}
+
+# Classifies a --domain's DNS: RESOLVED is the IPv4 addresses it resolves
+# to (whitespace-separated, "" for none) and PUBLIC_IP is this machine's
+# public IPv4 address ("" when it couldn't be found). Echoes one of:
+#   none       it doesn't resolve (yet);
+#   unknown    it resolves, but this machine's address is unknown;
+#   ok         it resolves to this machine;
+#   elsewhere  it resolves, but not to this machine.
+#   install_domain_resolution_state RESOLVED PUBLIC_IP
+install_domain_resolution_state() {
+  local resolved="$1" public="$2" ip
+  if [ -z "${resolved//[[:space:]]/}" ]; then
+    echo none
+    return 0
+  fi
+  if [ -z "$public" ]; then
+    echo unknown
+    return 0
+  fi
+  for ip in $resolved; do
+    if [ "$ip" = "$public" ]; then
+      echo ok
+      return 0
+    fi
+  done
+  echo elsewhere
+  return 0
 }
 
 # The image-ref regex for one service (core-api, dashboard, updater, agent
@@ -777,6 +944,8 @@ install_managed_value() {
     FOZZIE_PUBLIC_HOST) printf '%s\n' "$m_FOZZIE_PUBLIC_HOST" ;;
     FOZZIE_DASHBOARD_URL) printf '%s\n' "$m_FOZZIE_DASHBOARD_URL" ;;
     FOZZIE_CORE_PUBLIC_URL) printf '%s\n' "$m_FOZZIE_CORE_PUBLIC_URL" ;;
+    FOZZIE_DOMAIN) printf '%s\n' "$m_FOZZIE_DOMAIN" ;;
+    FOZZIE_TRUSTED_PROXY_HOPS) printf '%s\n' "$m_FOZZIE_TRUSTED_PROXY_HOPS" ;;
   esac
 }
 
@@ -797,20 +966,32 @@ install_managed_value() {
 #     NAME, never kept from the existing file;
 #   FOZZIE_AGENTS_ENABLED: the remembered choice, install_agents_wanted
 #     EXISTING FLAG_AGENTS (true or false);
-#   COMPOSE_PROFILES: "agents" when that's true and AGENTS_AVAILABLE is
-#     true, otherwise left out, so the orchestrator's profile is off. A
-#     run that can't have agents (AGENTS_AVAILABLE false: the release has
-#     no agent images, or pulling them failed) doesn't write
-#     FOZZIE_AGENTS_ENABLED=false, so the next release that can turns
-#     them back on.
-#   FOZZIE_BIND_ADDRESS, FOZZIE_PUBLIC_HOST (ADR-0277): flag, existing,
-#     then 127.0.0.1 with no host (install_network_wanted EXISTING
-#     FLAG_BIND_ADDRESS FLAG_PUBLIC_HOST LOCALHOST_ONLY); --localhost-only
-#     resets both. FOZZIE_BIND_ADDRESS is always written, FOZZIE_PUBLIC_HOST
-#     only when there is one;
-#   FOZZIE_DASHBOARD_URL, FOZZIE_CORE_PUBLIC_URL: always derived from those
-#     and the final ports (install_public_urls), never kept from the
-#     existing file, so a hand edit is overwritten on the next run.
+#   COMPOSE_PROFILES: the comma-joined list of "agents" (when that's true
+#     and AGENTS_AVAILABLE is true) and "domain" (when FOZZIE_DOMAIN is
+#     set) -- "agents", "domain" or "agents,domain" -- and left out when
+#     it's empty, so both profiles are off. A run that can't have agents
+#     (AGENTS_AVAILABLE false: the release has no agent images, or
+#     pulling them failed) doesn't write FOZZIE_AGENTS_ENABLED=false, so
+#     the next release that can turns them back on.
+#   FOZZIE_DOMAIN (ADR-0277's 2026-11-19 amendment): flag, else existing
+#     unless --no-domain or another network flag was given
+#     (install_domain_wanted EXISTING FLAG_DOMAIN NO_DOMAIN OTHER_NET_FLAG,
+#     OTHER_NET_FLAG computed here from LOCALHOST_ONLY, FLAG_BIND_ADDRESS
+#     and FLAG_PUBLIC_HOST); written only when there is one;
+#   FOZZIE_TRUSTED_PROXY_HOPS: 2 with a domain (Caddy, then the dashboard's
+#     proxy, each append an X-Forwarded-For entry), otherwise left out so
+#     core-api defaults to 1;
+#   FOZZIE_BIND_ADDRESS, FOZZIE_PUBLIC_HOST (ADR-0277): with a domain,
+#     127.0.0.1 and the domain; otherwise flag, existing (unless the
+#     existing ones came from a domain this run drops), then 127.0.0.1
+#     with no host (install_network_wanted EXISTING FLAG_BIND_ADDRESS
+#     FLAG_PUBLIC_HOST LOCALHOST_ONLY DOMAIN); --localhost-only resets
+#     both. FOZZIE_BIND_ADDRESS is always written, FOZZIE_PUBLIC_HOST only
+#     when there is one;
+#   FOZZIE_DASHBOARD_URL, FOZZIE_CORE_PUBLIC_URL: always derived from those,
+#     the domain and the final ports (install_public_urls), never kept
+#     from the existing file, so a hand edit is overwritten on the next
+#     run.
 # The candidates are generated by the caller, so this stays deterministic.
 # Either file may be "" or missing. Returns 1, echoing why to stderr, when
 # a required value is missing or a value isn't safe to write unquoted.
@@ -818,7 +999,7 @@ install_managed_value() {
 #     NEW_GHCR_USERNAME NEW_GHCR_TOKEN CANDIDATE_PASSWORD CANDIDATE_KEY \
 #     CANDIDATE_UPDATER_TOKEN PROJECT DIR CANDIDATE_HEARTBEAT_SECRET NAME \
 #     FLAG_AGENTS AGENTS_AVAILABLE FLAG_BIND_ADDRESS FLAG_PUBLIC_HOST \
-#     LOCALHOST_ONLY
+#     LOCALHOST_ONLY FLAG_DOMAIN NO_DOMAIN
 install_merge_env() {
   local existing="$1" import="$2" flag_core="$3" flag_dash="$4"
   local new_user="$5" new_token="$6" cand_password="$7" cand_key="$8" cand_updater="$9"
@@ -826,7 +1007,8 @@ install_merge_env() {
   local cand_heartbeat="${12:-}" m_FOZZIE_INSTANCE_NAME="${13:-}"
   local flag_agents="${14:-}" agents_available="${15:-false}"
   local flag_bind="${16:-}" flag_host="${17:-}" localhost_only="${18:-false}"
-  local key value line emitted=" "
+  local flag_domain="${19:-}" no_domain="${20:-false}"
+  local key value line emitted=" " other_net=false
   local m_FOZZIE_VERSION="$LATEST_VERSION"
   local m_FOZZIE_CORE_API_IMAGE="$LATEST_CORE_API_IMAGE"
   local m_FOZZIE_DASHBOARD_IMAGE="$LATEST_DASHBOARD_IMAGE"
@@ -837,6 +1019,7 @@ install_merge_env() {
   local m_CORE_API_PORT m_DASHBOARD_PORT m_GHCR_USERNAME m_GHCR_TOKEN
   local m_FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET m_FOZZIE_AGENTS_ENABLED m_COMPOSE_PROFILES=""
   local m_FOZZIE_BIND_ADDRESS m_FOZZIE_PUBLIC_HOST m_FOZZIE_DASHBOARD_URL m_FOZZIE_CORE_PUBLIC_URL
+  local m_FOZZIE_DOMAIN m_FOZZIE_TRUSTED_PROXY_HOPS=""
 
   m_POSTGRES_PASSWORD="$(install_env_get "$import" POSTGRES_PASSWORD)"
   [ -n "$m_POSTGRES_PASSWORD" ] || m_POSTGRES_PASSWORD="$(install_env_get "$existing" POSTGRES_PASSWORD)"
@@ -857,6 +1040,15 @@ install_merge_env() {
     m_COMPOSE_PROFILES=agents
   fi
 
+  if [ "$localhost_only" = true ] || [ -n "$flag_bind" ] || [ -n "$flag_host" ]; then
+    other_net=true
+  fi
+  m_FOZZIE_DOMAIN="$(install_domain_wanted "$existing" "$flag_domain" "$no_domain" "$other_net")"
+  if [ -n "$m_FOZZIE_DOMAIN" ]; then
+    m_FOZZIE_TRUSTED_PROXY_HOPS=2
+    m_COMPOSE_PROFILES="${m_COMPOSE_PROFILES:+$m_COMPOSE_PROFILES,}domain"
+  fi
+
   m_CORE_API_PORT="$flag_core"
   [ -n "$m_CORE_API_PORT" ] || m_CORE_API_PORT="$(install_env_get "$import" CORE_API_PORT)"
   [ -n "$m_CORE_API_PORT" ] || m_CORE_API_PORT="$(install_env_get "$existing" CORE_API_PORT)"
@@ -867,8 +1059,8 @@ install_merge_env() {
   [ -n "$m_DASHBOARD_PORT" ] || m_DASHBOARD_PORT="$(install_env_get "$existing" DASHBOARD_PORT)"
   [ -n "$m_DASHBOARD_PORT" ] || m_DASHBOARD_PORT=5173
 
-  read -r m_FOZZIE_BIND_ADDRESS m_FOZZIE_PUBLIC_HOST <<< "$(install_network_wanted "$existing" "$flag_bind" "$flag_host" "$localhost_only")"
-  read -r m_FOZZIE_DASHBOARD_URL m_FOZZIE_CORE_PUBLIC_URL <<< "$(install_public_urls "$m_FOZZIE_BIND_ADDRESS" "$m_FOZZIE_PUBLIC_HOST" "$m_DASHBOARD_PORT" "$m_CORE_API_PORT")"
+  read -r m_FOZZIE_BIND_ADDRESS m_FOZZIE_PUBLIC_HOST <<< "$(install_network_wanted "$existing" "$flag_bind" "$flag_host" "$localhost_only" "$m_FOZZIE_DOMAIN")"
+  read -r m_FOZZIE_DASHBOARD_URL m_FOZZIE_CORE_PUBLIC_URL <<< "$(install_public_urls "$m_FOZZIE_BIND_ADDRESS" "$m_FOZZIE_PUBLIC_HOST" "$m_DASHBOARD_PORT" "$m_CORE_API_PORT" "$m_FOZZIE_DOMAIN")"
 
   m_GHCR_USERNAME="$new_user"
   [ -n "$m_GHCR_USERNAME" ] || m_GHCR_USERNAME="$(install_env_get "$existing" GHCR_USERNAME)"
@@ -893,9 +1085,9 @@ install_merge_env() {
     value="$(install_managed_value "$key")"
     if [ -n "$value" ] && ! [[ "$value" =~ $INSTALL_ENV_VALUE_REGEX ]]; then
       if [ "$key" = FOZZIE_INSTALL_DIR ]; then
-        printf 'The install directory %s has characters the installer cannot write safely -- only letters, digits and + / = . _ : @ - are allowed. Pick another with --dir.\n' "$value" >&2
+        printf 'The install directory %s has characters the installer cannot write safely -- only letters, digits and + / = . _ : @ , - are allowed. Pick another with --dir.\n' "$value" >&2
       else
-        printf '%s has characters the installer cannot write safely -- only letters, digits and + / = . _ : @ - are allowed\n' "$key" >&2
+        printf '%s has characters the installer cannot write safely -- only letters, digits and + / = . _ : @ , - are allowed\n' "$key" >&2
       fi
       return 1
     fi
@@ -1366,6 +1558,68 @@ installer_args() {
   printf '%s\n' "$args"
 }
 
+# resolve_ipv4 HOST: the IPv4 addresses HOST resolves to, one per line,
+# deduplicated -- nothing when it doesn't resolve. Uses the first lookup
+# tool this machine has (getent, dig, host, then macOS's dscacheutil) and
+# doesn't fall through to the next on an empty answer. Never fails.
+resolve_ipv4() {
+  local host="$1" out=""
+  if command -v getent >/dev/null 2>&1; then
+    out="$(getent ahostsv4 "$host" 2>/dev/null </dev/null | awk '{ print $1 }' || true)"
+  elif command -v dig >/dev/null 2>&1; then
+    out="$(dig +short A "$host" 2>/dev/null </dev/null || true)"
+  elif command -v host >/dev/null 2>&1; then
+    out="$(host -t A "$host" 2>/dev/null </dev/null | awk '/ has address / { print $NF }' || true)"
+  elif command -v dscacheutil >/dev/null 2>&1; then
+    out="$(dscacheutil -q host -a name "$host" 2>/dev/null </dev/null | awk '$1 == "ip_address:" { print $2 }' || true)"
+  fi
+  local line
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    if install_valid_ipv4 "$line"; then
+      printf '%s\n' "$line"
+    fi
+  done <<< "$out" | sort -u || true
+}
+
+# public_ipv4: this machine's public IPv4 address, as the internet sees
+# it, or nothing when it can't be found (offline, blocked, a bad answer).
+# Never fails.
+public_ipv4() {
+  local ip
+  ip="$(curl -fsS --max-time 5 https://checkip.amazonaws.com </dev/null 2>/dev/null || true)"
+  ip="$(printf '%s' "$ip" | tr -d '[:space:]')"
+  if install_valid_ipv4 "$ip"; then
+    printf '%s\n' "$ip"
+  fi
+  return 0
+}
+
+# check_domain_dns DOMAIN: warns -- never fails -- when DOMAIN doesn't
+# resolve yet, or resolves somewhere other than this machine. Caddy keeps
+# retrying the certificate either way, so it starts working once DNS is
+# right.
+check_domain_dns() {
+  local domain="$1" resolved public
+  resolved="$(resolve_ipv4 "$domain" | tr '\n' ' ')"
+  resolved="${resolved% }"
+  public="$(public_ipv4)"
+  case "$(install_domain_resolution_state "$resolved" "$public")" in
+    none)
+      echo
+      echo "Warning: $domain doesn't resolve yet. Add a DNS A record pointing it at this"
+      echo "machine's public address${public:+ ($public)} -- Caddy keeps retrying the certificate,"
+      echo "and it'll work once DNS is right."
+      ;;
+    elsewhere)
+      echo
+      echo "Warning: $domain points at $resolved, but this machine's public address is"
+      echo "$public -- Caddy keeps retrying the certificate, and it'll work once DNS is right."
+      ;;
+  esac
+  return 0
+}
+
 # leftover_data STATE: there's data here this run can't open (STATE is
 # no-env or mismatch, see install_data_state). Never makes a new password
 # for it: refuses, or asks whether to keep the data or start fresh.
@@ -1695,19 +1949,36 @@ main() {
   # Opt-in: only the dashboard's port, and only with --public-host or
   # --bind-address (remembered in .env after that). Warn whenever this run
   # turns it on or changes where it listens; a re-run that keeps the same
-  # setting says nothing.
-  local NET_BIND NET_HOST prev_bind prev_host
-  read -r NET_BIND NET_HOST <<< "$(install_network_wanted "$ENV_FILE" "$INSTALL_BIND_ADDRESS" "$INSTALL_PUBLIC_HOST" "$INSTALL_LOCALHOST_ONLY")"
+  # setting says nothing. --domain is the exception: Caddy alone listens
+  # publicly, on 80 and 443, over HTTPS, and the dashboard stays on
+  # loopback -- so it gets its own notice, not the plain-HTTP warning.
+  local NET_BIND NET_HOST prev_bind prev_host DOMAIN prev_domain other_net=false
+  if [ "$INSTALL_LOCALHOST_ONLY" = true ] || [ -n "$INSTALL_BIND_ADDRESS" ] || [ -n "$INSTALL_PUBLIC_HOST" ]; then
+    other_net=true
+  fi
+  DOMAIN="$(install_domain_wanted "$ENV_FILE" "$INSTALL_DOMAIN" "$INSTALL_NO_DOMAIN" "$other_net")"
+  prev_domain="$(install_lower "$(install_env_get "$ENV_FILE" FOZZIE_DOMAIN)")"
+  read -r NET_BIND NET_HOST <<< "$(install_network_wanted "$ENV_FILE" "$INSTALL_BIND_ADDRESS" "$INSTALL_PUBLIC_HOST" "$INSTALL_LOCALHOST_ONLY" "$DOMAIN")"
   prev_bind="$(install_env_get "$ENV_FILE" FOZZIE_BIND_ADDRESS)"
   [ -n "$prev_bind" ] || prev_bind=127.0.0.1
   prev_host="$(install_env_get "$ENV_FILE" FOZZIE_PUBLIC_HOST)"
-  if ! install_is_loopback "$NET_BIND" &&
+  if [ -n "$DOMAIN" ] && [ "$DOMAIN" != "$prev_domain" ]; then
+    echo
+    install_domain_notice
+    if [ "$INSTALL_YES" != true ] && have_tty; then
+      confirm "Serve Fozzie at https://$DOMAIN on ports 80 and 443?" || die "Nothing changed."
+    fi
+  elif ! install_is_loopback "$NET_BIND" &&
     { install_is_loopback "$prev_bind" || [ "$NET_BIND" != "$prev_bind" ] || [ "$NET_HOST" != "$prev_host" ]; }; then
     echo
     install_network_warning
     if [ "$INSTALL_YES" != true ] && have_tty; then
       confirm "Open Fozzie's dashboard to your network?" || die "Nothing changed."
     fi
+  fi
+  # Warns only: DNS can be added after the install, and Caddy retries.
+  if [ -n "$DOMAIN" ]; then
+    check_domain_dns "$DOMAIN"
   fi
 
   # --- 6. docker-compose.yml and .env -----------------------------------
@@ -1727,7 +1998,8 @@ main() {
     "$NEW_GHCR_USERNAME" "$NEW_GHCR_TOKEN" \
     "$(openssl rand -hex 24)" "$(openssl rand -base64 32)" "$(openssl rand -hex 32)" \
     "$PROJECT" "$DIR" "$(openssl rand -hex 32)" "$NAME" "$INSTALL_AGENTS" "$AGENTS_AVAILABLE" \
-    "$INSTALL_BIND_ADDRESS" "$INSTALL_PUBLIC_HOST" "$INSTALL_LOCALHOST_ONLY")" ||
+    "$INSTALL_BIND_ADDRESS" "$INSTALL_PUBLIC_HOST" "$INSTALL_LOCALHOST_ONLY" \
+    "$INSTALL_DOMAIN" "$INSTALL_NO_DOMAIN")" ||
     die "Couldn't write $ENV_FILE."
   # Hex for new installs (see install_url_safe_password); this catches one
   # made by 0.1.0's installer, whose password can never work. Its database
@@ -1786,13 +2058,40 @@ main() {
 
   # --- 8. Start ----------------------------------------------------------
 
+  local dc_cmd
+  dc_cmd="cd \"$DIR\" && docker compose -p $PROJECT --env-file .env"
+  local profiles
+  profiles="$(install_env_get "$ENV_FILE" COMPOSE_PROFILES)"
+
   log "Starting Fozzie instance \"$NAME\""
-  # COMPOSE_PROFILES in .env decides whether this starts the orchestrator.
-  dc up -d
+  # COMPOSE_PROFILES in .env decides whether this starts the orchestrator
+  # ("agents") and Caddy ("domain").
+  if ! dc up -d; then
+    case ",$profiles," in
+      *,domain,*)
+        die "" "Couldn't start Fozzie -- see the output above. Serving https://$DOMAIN needs ports" \
+          "80 and 443 on this machine: they may already be in use (another web server, or" \
+          "another instance serving a domain here). Caddy's logs:" \
+          "  $dc_cmd logs caddy"
+        ;;
+    esac
+    die "" "Couldn't start Fozzie -- see the output above."
+  fi
+  case ",$profiles," in
+    *,domain,*) ;;
+    *)
+      # `up -d` with the profile off leaves a Caddy that's already running
+      # alone (--no-domain), still holding ports 80 and 443, so remove it.
+      # Its volumes stay, so turning the domain back on reuses the
+      # certificates. A no-op when there isn't one.
+      dc --profile domain rm -sf caddy >/dev/null 2>&1 || true
+      ;;
+  esac
   local agents_on=false
-  if [ "$(install_env_get "$ENV_FILE" COMPOSE_PROFILES)" = agents ]; then
-    agents_on=true
-  else
+  case ",$profiles," in
+    *,agents,*) agents_on=true ;;
+  esac
+  if [ "$agents_on" != true ]; then
     # `up -d` with the profile off leaves an orchestrator that's already
     # running alone, so stop it. `stop`, not `rm`: with restart:
     # unless-stopped a stopped container stays stopped across Docker
@@ -1827,8 +2126,6 @@ main() {
 
   # --- 9b. Agents on: wait for the orchestrator's first heartbeat ------
 
-  local dc_cmd
-  dc_cmd="cd \"$DIR\" && docker compose -p $PROJECT --env-file .env"
   if [ "$agents_on" = true ]; then
     log "Waiting for the agent service to report to Fozzie"
     # The orchestrator started in the same `up -d` as core-api, so its
@@ -1885,7 +2182,12 @@ main() {
 
   # --- 10. Fresh install only: hand the setup token to the browser -----
 
-  local url="http://localhost:$DASHBOARD_PORT"
+  # With a domain, the browser goes through Caddy: localhost:<port> is the
+  # server's own loopback, and on a headless server there's no browser
+  # here anyway, so the URL is printed below.
+  local base_url="http://localhost:$DASHBOARD_PORT"
+  [ -z "$DOMAIN" ] || base_url="https://$DOMAIN"
+  local url="$base_url"
   if [ "$have_data" != true ]; then
     # The one-time block core-api prints on its very first boot (ADR-0019),
     # read the same way the source install reads it.
@@ -1898,7 +2200,7 @@ main() {
       echo "Couldn't find the one-time setup token in core-api's logs. Look for it with:"
       echo "  cd \"$DIR\" && docker compose -p $PROJECT --env-file .env logs core-api"
     else
-      url="http://localhost:$DASHBOARD_PORT/?setup_token=$token"
+      url="$base_url/?setup_token=$token"
     fi
   fi
 
@@ -1907,7 +2209,15 @@ main() {
   local update_args
   update_args="$(installer_args)"
 
-  log "Fozzie $LATEST_VERSION (instance \"$NAME\") is running at http://localhost:$DASHBOARD_PORT"
+  log "Fozzie $LATEST_VERSION (instance \"$NAME\") is running at $base_url"
+  if [ -n "$DOMAIN" ]; then
+    echo "Served over HTTPS by Caddy on ports 80 and 443. The first visit can take a few"
+    echo "seconds while the certificate is issued. If the page doesn't load, check DNS,"
+    echo "the firewalls, and Caddy's logs:"
+    echo "  $dc_cmd logs caddy"
+    echo "Stop serving at $DOMAIN (back to this machine only):"
+    echo "  curl -fsSL $FOZZIE_RELEASES_URL/install.sh | bash -s --$update_args --no-domain"
+  fi
   if [ -n "$bind_address" ] && ! install_is_loopback "$bind_address"; then
     case "$public_dashboard_url" in
       "" | http://localhost:*)

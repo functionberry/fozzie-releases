@@ -11,16 +11,19 @@
 # FOZZIE_INSTALL_DIR for the updater. Re-running install.sh updates
 # everything; the updater service below does a one-click update of
 # core-api, dashboard and backup in place. Every port binds to the host's
-# own loopback interface only, except that the dashboard's can be opened to
-# the network by opting in with the installer's --public-host /
-# --bind-address (ADR-0277). core-api's port never is.
+# own loopback interface only, except the dashboard's opt-in (the
+# installer's --public-host / --bind-address, ADR-0277) and the caddy
+# service's 80 and 443 under the installer's --domain (ADR-0277's
+# 2026-11-19 amendment). core-api's port never is.
 #
 # The orchestrator, which runs the agents created in the app (ADR-0215),
 # is in the "agents" profile. install.sh turns it on by default by
 # writing COMPOSE_PROFILES=agents into .env, which Compose reads from
 # --env-file like any other value; `--no-agents` drops that line (and
-# remembers the choice), so the orchestrator isn't started. Every other
-# service runs either way.
+# remembers the choice), so the orchestrator isn't started. The caddy
+# service, which serves HTTPS for `--domain`, is likewise in the "domain"
+# profile: install.sh adds it to COMPOSE_PROFILES (agents,domain) only
+# with a domain. Every other service runs either way.
 #
 # The volume keys match the source-built local install's (ADR-0143), so
 # an instance installed that way can switch to these images and keep its
@@ -114,11 +117,30 @@ services:
       FOZZIE_LOGIN_FAILURES_PER_EMAIL: ${FOZZIE_LOGIN_FAILURES_PER_EMAIL:-}
       FOZZIE_LOGIN_RATE_WINDOW_MINUTES: ${FOZZIE_LOGIN_RATE_WINDOW_MINUTES:-}
       FOZZIE_PASSWORD_RESET_REQUESTS_PER_IP: ${FOZZIE_PASSWORD_RESET_REQUESTS_PER_IP:-}
-      # Rate-limit by the last X-Forwarded-For entry (ADR-0280). Safe only
-      # here: core-api's port is bound to loopback below, so a remote
-      # browser can only arrive through the dashboard's proxy, which
-      # appends its own socket peer to the header.
+      # Federation limits (ADR-0308): the most items, characters per name,
+      # UTF-8 bytes per content body and bytes per whole response a sync
+      # may carry, and each partner's sync burst and refill per minute.
+      # Empty means the defaults: 5000 items, 500 characters, 262144
+      # bytes (256 KiB), 8388608 bytes (8 MiB), a burst of 10 and 2 a
+      # minute.
+      FOZZIE_FEDERATION_MAX_SNAPSHOT_ITEMS: ${FOZZIE_FEDERATION_MAX_SNAPSHOT_ITEMS:-}
+      FOZZIE_FEDERATION_MAX_NAME_LENGTH: ${FOZZIE_FEDERATION_MAX_NAME_LENGTH:-}
+      FOZZIE_FEDERATION_MAX_CONTENT_BYTES: ${FOZZIE_FEDERATION_MAX_CONTENT_BYTES:-}
+      FOZZIE_FEDERATION_MAX_SNAPSHOT_BYTES: ${FOZZIE_FEDERATION_MAX_SNAPSHOT_BYTES:-}
+      FOZZIE_FEDERATION_SYNC_BURST: ${FOZZIE_FEDERATION_SYNC_BURST:-}
+      FOZZIE_FEDERATION_SYNC_PER_MINUTE: ${FOZZIE_FEDERATION_SYNC_PER_MINUTE:-}
+      # Rate-limit by the X-Forwarded-For entry the outermost trusted proxy
+      # wrote (ADR-0280). Safe only here: core-api's port is bound to
+      # loopback below, so a remote browser can only arrive through the
+      # dashboard's proxy, which appends its own socket peer to the header
+      # -- or, with the installer's --domain, through the caddy service
+      # first, which appends one too, so there are 2 trusted hops.
       FOZZIE_TRUST_FORWARDED_FOR: "true"
+      # How many trusted proxies each appended one X-Forwarded-For entry
+      # (ADR-0280's 2026-11-19 amendment). Empty means 1 (the dashboard's
+      # proxy alone); install.sh --domain sets 2 (Caddy, then the
+      # dashboard's proxy).
+      FOZZIE_TRUSTED_PROXY_HOPS: ${FOZZIE_TRUSTED_PROXY_HOPS:-}
       # Lets the orchestrator below post its heartbeat (ADR-0201), so the
       # app can show whether the agent service is running. install.sh
       # generates it once, agents on or off, and hands the same value to
@@ -316,6 +338,40 @@ services:
       - core-api
     restart: unless-stopped
 
+  # HTTPS at a domain name, for a server reachable from the internet (the
+  # installer's --domain, ADR-0277's 2026-11-19 amendment): Caddy gets and
+  # renews a Let's Encrypt certificate for FOZZIE_DOMAIN by itself,
+  # redirects HTTP to HTTPS, and forwards everything to the dashboard over
+  # the Compose network. The dashboard and core-api stay on loopback; only
+  # this service listens publicly. No Caddyfile: `caddy reverse-proxy`
+  # does all of it, and passes the original Host header through.
+  #
+  # Only in the "domain" profile (COMPOSE_PROFILES=...,domain in .env).
+  # The domain has a placeholder default rather than `:?` for the same
+  # reason as the orchestrator's image above: Compose checks every
+  # service's interpolation, profiled out or not. The placeholder is
+  # never served: install.sh only turns the profile on with a domain.
+  #
+  # The certificates (and Caddy's account key) live in fozzie_caddy_data.
+  # Keep it: Let's Encrypt rate-limits new certificates, and --no-domain
+  # removes the container but not its volumes. The updater never touches
+  # this service; re-running install.sh updates it.
+  caddy:
+    image: caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
+    profiles: ["domain"]
+    # One line on purpose: scripts/test.sh checks it as written.
+    # prettier-ignore
+    command: ["caddy", "reverse-proxy", "--from", "${FOZZIE_DOMAIN:-fozzie-domain-not-set}", "--to", "dashboard:5173"]
+    ports:
+      - "0.0.0.0:80:80"
+      - "0.0.0.0:443:443"
+    volumes:
+      - fozzie_caddy_data:/data
+      - fozzie_caddy_config:/config
+    depends_on:
+      - dashboard
+    restart: unless-stopped
+
 volumes:
   fozzie_pg_local_data:
   fozzie_git_repos_local:
@@ -323,9 +379,13 @@ volumes:
   fozzie_backups_local:
   # The updater's run.json and report queue, so a restart resumes a run.
   fozzie_updater_state:
-  # Each agent's credentials (written by core-api) and npm's download
-  # cache for agent runs. Both keys must stay identical to the orchestrator
-  # image's dispatch file's (and docker/docker-compose.local.yml's), so they
-  # resolve to the same <project>_... volumes.
+  # Each agent's credentials (written by core-api). The key must stay
+  # identical to the orchestrator image's dispatch file's (and
+  # docker/docker-compose.local.yml's), so they resolve to the same
+  # <project>_fozzie_agent_secrets_local volume. Agents' home volumes
+  # (<project>_agent_home_<slug>, ADR-0310) are declared only by the
+  # dispatch file, created on an agent's first run.
   fozzie_agent_secrets_local:
-  fozzie_npm_cache:
+  # Caddy's certificates and its own config (the "domain" profile).
+  fozzie_caddy_data:
+  fozzie_caddy_config:

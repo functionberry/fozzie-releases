@@ -119,6 +119,26 @@ that address too.
 The installer shows the same warning, and asks before opening the port
 unless you passed `--yes`.
 
+### On a server, at your own domain (HTTPS)
+
+On a server reachable from the internet, with a domain name whose DNS A
+record points at it, `--domain` serves Fozzie at `https://<domain>`
+instead:
+
+```sh
+curl -fsSL https://functionberry.github.io/fozzie-releases/install.sh | bash -s -- --domain app.example.com
+```
+
+It adds a [Caddy](https://caddyserver.com) container that listens on
+ports 80 and 443 and gets and renews a Let's Encrypt certificate by
+itself. The dashboard and core-api stay on `127.0.0.1`, so only Caddy is
+reachable from outside, and everything travels over HTTPS. Ports 80 and
+443 must be free on the server and allowed in both your cloud provider's
+firewall and the server's own. The choice is remembered, and
+`--no-domain` switches back. The "Deploy to a server" guide in Fozzie's
+repository (`docs/DEPLOY_TO_A_SERVER.md`) walks through it from an empty
+server.
+
 ## Where things live
 
 Fozzie installs into `~/fozzie` (or `~/fozzie-<name>` for a named
@@ -280,7 +300,7 @@ as an AI provider:
    Environment="OLLAMA_HOST=0.0.0.0"
    ```
 
-2. In Fozzie, go to Settings → AI providers and click **Add resource**.
+2. In Fozzie, go to Settings → AI resources and click **Add resource**.
    Pick the **OpenAI-compatible** provider type, and set the base URL to
    `http://host.docker.internal:11434/v1`. Don't use `localhost`: Fozzie's
    server runs in its own container, so to it `localhost` means that
@@ -319,6 +339,82 @@ If you installed Fozzie before agents shipped, re-run the installer once
 to add the agent service: in-app updates don't add it. Until then, the
 Agents page says "Agent service not set up on this instance" and shows
 the command to run.
+
+## Tests on your own repository
+
+A coding task has a **Run tests** step. For your agent to test a change,
+your repository has to say how its tests run. JavaScript and TypeScript
+projects work best for now, because the agent's container is built
+around Node.
+
+The simplest way is a `.fozzie/test.json` file in the repository:
+
+```json
+{ "command": "npm test", "setup": "npm ci", "timeoutMinutes": 30 }
+```
+
+- `command` (required) runs from the root of the repository.
+- `setup` (optional) runs first, for example to install dependencies.
+- `timeoutMinutes` (optional) is a whole number from 1 to 240. It
+  defaults to 30.
+- `paths` (optional) is a list of folders and files the tests depend on.
+  A change outside them keeps an earlier test result. Leave it out unless
+  you're sure: a list that's too narrow lets an old result count for
+  changed code.
+
+Any other key is an error, so a typo such as `comand` shows up rather
+than quietly meaning "no command". The file can be up to 64 KB.
+
+If you'd rather not add a file, set the command on the repository
+instead:
+
+1. Open **Repositories** and select the repository.
+2. Select **Show properties panel**, the button beside its name.
+3. In the **Code repo** group, select **Edit** on **Test command**,
+   enter the command and select **Save**. **Test setup command** works
+   the same way.
+
+The setting's timeout is 30 minutes. **Test timeout (minutes)** can't be
+edited there yet, so for a different timeout use `timeoutMinutes` in the
+file. The setting has no `paths`.
+
+If the branch has a `.fozzie/test.json`, it's used and the setting is
+ignored entirely: fields aren't mixed from both. If the file is invalid,
+Fozzie doesn't fall back to the setting. It shows the file's error, and
+the fix is to correct the file.
+
+**What Run tests does.** Your agent merges the latest main into its
+branch, runs exactly the declared setup and command within the timeout,
+and passes or fails on the exit code. If the tests fail, the agent adds
+the fixes as new steps and runs them again. The result is recorded as
+reported by the agent: Fozzie doesn't yet run your tests itself to check
+it. With no command declared, nothing runs, the step records "No test
+command declared -- untested", and the pull request goes on to review.
+With an invalid file, Run tests fails and adds one step to fix the file.
+
+**Labels.** A pull request that no test run has checked shows one of
+these, with **Why untested?** or **What does this mean?** to explain:
+
+- **Untested: no test command**: nothing is declared, or the file is
+  invalid (the explanation then shows the file's error).
+- **Untested: tests haven't run**: a command is declared, but no result
+  has been recorded yet.
+- **Tests reported by agent (unverified)**: your agent ran the tests and
+  recorded the result itself.
+
+They show under **Merge readiness**, beside **Tests on merged tree**; on
+a merged pull request's **Pull request** tab, beside its status; and on
+the repository's list of pull requests. **Activity** shows "Merged
+untested: no test command" or "Merged with tests reported by agent
+(unverified)". Your install merges untested pull requests anyway: the
+label only makes that visible.
+
+**Your agent offers a command.** If a coding task starts on a repository
+with no test command, the agent adds a `.fozzie/test.json` to the same
+pull request, with a command it ran successfully. The pull request's
+description says so. Reviewing and merging that pull request declares
+the command. If nothing ran successfully, the agent leaves the file out
+and says why.
 
 ## Feedback
 
