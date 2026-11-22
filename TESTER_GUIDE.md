@@ -132,17 +132,19 @@ curl -fsSL https://functionberry.github.io/fozzie-releases/install.sh | bash -s 
 It adds a [Caddy](https://caddyserver.com) container that listens on
 ports 80 and 443 and gets and renews a Let's Encrypt certificate by
 itself. The dashboard and core-api stay on `127.0.0.1`, so only Caddy is
-reachable from outside, and everything travels over HTTPS. Ports 80 and
-443 must be free on the server and allowed in both your cloud provider's
-firewall and the server's own. The choice is remembered, and
-`--no-domain` switches back. The "Deploy to a server" guide in Fozzie's
+reachable from outside, and everything travels over HTTPS. Caddy also
+adds the standard security headers, including one that tells browsers
+to always use HTTPS for that domain (`--hsts subdomains` extends it to
+every subdomain). Ports 80 and 443 must be free on the server and
+allowed in both your cloud provider's firewall and the server's own. The
+choice is remembered, and `--no-domain` switches back. The "Deploy to a server" guide in Fozzie's
 repository (`docs/DEPLOY_TO_A_SERVER.md`) walks through it from an empty
 server.
 
 ## Where things live
 
 Fozzie installs into `~/fozzie` (or `~/fozzie-<name>` for a named
-instance). That directory holds two files:
+instance). That directory holds two files, three with `--domain`:
 
 - `docker-compose.yml`, which describes the containers. The installer
   replaces it on every run.
@@ -152,6 +154,9 @@ instance). That directory holds two files:
   readable only by you (`chmod 600`). Don't share it or commit it
   anywhere. The installer keeps any line you add to it, for example SMTP
   settings.
+- `Caddyfile`, only with `--domain`: the settings of the Caddy container
+  that serves HTTPS. The installer rewrites it on every run, and removes
+  it with `--no-domain`.
 
 Your data itself (the database, git repositories, attachments and
 backups) lives in Docker volumes, not in that directory. It can only be
@@ -218,6 +223,15 @@ docker compose -p fozzie-local --env-file .env exec --user node core-api node di
 It prints a link that works once, for an hour. Open it in your browser
 and choose a new password. That signs the account out everywhere else and
 revokes its API tokens.
+
+If you know your password but have lost your authenticator app (and your
+recovery codes), add `--reset-2fa` instead. It turns two-factor sign-in
+off for that account, so you can sign in with just your password and set
+it up again. It doesn't print a link or change your password:
+
+```sh
+docker compose -p fozzie-local --env-file .env exec --user node core-api node dist/adminCli.js reset-password --reset-2fa you@example.com
+```
 
 Fozzie must be running: `exec` needs the `core-api` container up. If it
 isn't, start Fozzie first (see [Stopping and starting](#stopping-and-starting)).
@@ -355,6 +369,10 @@ The simplest way is a `.fozzie/test.json` file in the repository:
 
 - `command` (required) runs from the root of the repository.
 - `setup` (optional) runs first, for example to install dependencies.
+- `lint` and `build` (optional) run after setup and before the tests, in
+  that order, for example `npm run lint` and `npm run build`. Your agent
+  also runs them after each change it makes. They're only in the file:
+  the setting has no lint or build.
 - `timeoutMinutes` (optional) is a whole number from 1 to 240. It
   defaults to 30.
 - `paths` (optional) is a list of folders and files the tests depend on.
@@ -376,7 +394,7 @@ instead:
 
 The setting's timeout is 30 minutes. **Test timeout (minutes)** can't be
 edited there yet, so for a different timeout use `timeoutMinutes` in the
-file. The setting has no `paths`.
+file. The setting has no `paths`, `lint` or `build`.
 
 If the branch has a `.fozzie/test.json`, it's used and the setting is
 ignored entirely: fields aren't mixed from both. If the file is invalid,
@@ -384,7 +402,8 @@ Fozzie doesn't fall back to the setting. It shows the file's error, and
 the fix is to correct the file.
 
 **What Run tests does.** Your agent merges the latest main into its
-branch, runs exactly the declared setup and command within the timeout,
+branch, runs exactly the declared setup, lint, build and command
+within the timeout,
 and passes or fails on the exit code. If the tests fail, the agent adds
 the fixes as new steps and runs them again. The result is recorded as
 reported by the agent: Fozzie doesn't yet run your tests itself to check
@@ -415,6 +434,32 @@ pull request, with a command it ran successfully. The pull request's
 description says so. Reviewing and merging that pull request declares
 the command. If nothing ran successfully, the agent leaves the file out
 and says why.
+
+### Files under .fozzie/
+
+A repository can hold a few files in a `.fozzie/` folder that tell your
+agents how to work on it. All of them are optional.
+
+- `.fozzie/test.json` declares how the tests run, as described at the
+  start of this section.
+- `.fozzie/setup.sh` prepares the agent's environment:
+  - It runs at the start of every attempt, on every step, before the
+    step's work. It runs from the repository's root, with bash, as the
+    agent, with the agent's own home folder, which keeps what's
+    installed there between runs.
+  - Use it to install toolchains into the home folder and fetch
+    dependencies. Keep it safe to run again: it runs every time.
+  - It has a time limit of 15 minutes by default. To change it, set
+    `FOZZIE_SETUP_TIMEOUT_MINUTES` in your `.env`.
+  - Its output shows in the run's activity.
+  - If it fails, the attempt isn't counted against the step.
+  - After 3 failures in a row, the step is parked as Blocked with "setup
+    failed". Fix the script on the branch, or use **Reset environment**
+    on the agent's page, then set the step back to Not started.
+  - Agents may add or improve it in their pull requests.
+- `.fozzie/AGENTS.md` is extra guidance for your agents, read after the
+  `AGENTS.md` (or `CLAUDE.md`) at the repository's root. Fozzie's
+  workflow rules still win over both.
 
 ## Feedback
 

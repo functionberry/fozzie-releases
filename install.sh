@@ -15,7 +15,9 @@
 # On a server with a domain name pointing at it: --domain HOST serves
 # Fozzie at https://HOST through a Caddy container on ports 80 and 443,
 # with automatic Let's Encrypt certificates (ADR-0277's 2026-11-19
-# amendment). Later runs remember it; --no-domain switches back.
+# amendment), with the standard security headers set at the edge
+# (2026-11-21 amendment; --hsts widens HSTS). Later runs remember it;
+# --no-domain switches back.
 #
 # Switching an instance installed from source to these images, keeping
 # its data: --import-env <its env file> takes its secrets and ports.
@@ -181,7 +183,7 @@ INSTALL_GHCR_TOKEN_REGEX="^[${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}_]+
 INSTALL_ENV_VALUE_REGEX="^[${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}+/=._:@,-]+\$"
 
 # The keys install_merge_env owns, in the order it appends them.
-INSTALL_MANAGED_KEYS="FOZZIE_VERSION FOZZIE_CORE_API_IMAGE FOZZIE_DASHBOARD_IMAGE FOZZIE_UPDATER_IMAGE POSTGRES_PASSWORD FOZZIE_ENCRYPTION_KEY FOZZIE_UPDATER_TOKEN CORE_API_PORT DASHBOARD_PORT GHCR_USERNAME GHCR_TOKEN COMPOSE_PROJECT FOZZIE_INSTALL_DIR FOZZIE_AGENT_IMAGE FOZZIE_ORCHESTRATOR_IMAGE FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET FOZZIE_INSTANCE_NAME FOZZIE_AGENTS_ENABLED COMPOSE_PROFILES FOZZIE_BIND_ADDRESS FOZZIE_PUBLIC_HOST FOZZIE_DASHBOARD_URL FOZZIE_CORE_PUBLIC_URL FOZZIE_DOMAIN FOZZIE_TRUSTED_PROXY_HOPS"
+INSTALL_MANAGED_KEYS="FOZZIE_VERSION FOZZIE_CORE_API_IMAGE FOZZIE_DASHBOARD_IMAGE FOZZIE_UPDATER_IMAGE POSTGRES_PASSWORD FOZZIE_ENCRYPTION_KEY FOZZIE_UPDATER_TOKEN CORE_API_PORT DASHBOARD_PORT GHCR_USERNAME GHCR_TOKEN COMPOSE_PROJECT FOZZIE_INSTALL_DIR FOZZIE_AGENT_IMAGE FOZZIE_ORCHESTRATOR_IMAGE FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET FOZZIE_INSTANCE_NAME FOZZIE_AGENTS_ENABLED COMPOSE_PROFILES FOZZIE_BIND_ADDRESS FOZZIE_PUBLIC_HOST FOZZIE_DASHBOARD_URL FOZZIE_CORE_PUBLIC_URL FOZZIE_DOMAIN FOZZIE_TRUSTED_PROXY_HOPS FOZZIE_HSTS"
 
 INSTALL_ENV_HEADER="# Managed by the Fozzie installer: it rewrites the keys it manages on every run and keeps every other line. Holds secrets -- keep it private."
 
@@ -234,6 +236,13 @@ Options:
                           record must point at this machine. The dashboard
                           and core-api stay on 127.0.0.1. Remembered by
                           later runs and updates.
+  --hsts MODE             With --domain: how far browsers are told to
+                          always use HTTPS (HSTS, for a year). host (the
+                          default) covers just the domain; subdomains adds
+                          every subdomain of it; preload also asks to be
+                          built into browsers -- every subdomain of the
+                          registered domain, and very slow to undo.
+                          Remembered by later runs and updates.
   --no-domain             Stop serving at the domain: removes the Caddy
                           container (keeping its certificates) and goes
                           back to this machine only.
@@ -379,12 +388,14 @@ install_default_dir() {
 # INSTALL_BIND_ADDRESS and INSTALL_PUBLIC_HOST ("" when not given; see
 # install_network_wanted, ADR-0277), INSTALL_DOMAIN (--domain, lowercased,
 # "" when not given) and INSTALL_NO_DOMAIN (true/false; see
-# install_domain_wanted, ADR-0277's 2026-11-19 amendment). Takes both
+# install_domain_wanted, ADR-0277's 2026-11-19 amendment) and INSTALL_HSTS
+# (--hsts: host, subdomains or preload, "" when not given; see
+# install_hsts_wanted, ADR-0277's 2026-11-21 amendment). Takes both
 # "--flag value" and "--flag=value". An unknown flag, a missing value, an
-# invalid name, port, bind address, public host or domain, both agent
-# flags at once, or network flags that contradict each other
+# invalid name, port, bind address, public host, domain or HSTS mode, both
+# agent flags at once, or network flags that contradict each other
 # (--localhost-only with --bind-address or --public-host; a loopback
-# --bind-address with --public-host; --domain with --no-domain,
+# --bind-address with --public-host; --domain or --hsts with --no-domain,
 # --localhost-only, --bind-address or --public-host) prints why and the
 # usage to stderr and returns 1. INSTALL_DIR defaults from $HOME.
 install_parse_args() {
@@ -404,6 +415,7 @@ install_parse_args() {
   INSTALL_LOCALHOST_ONLY=false
   INSTALL_DOMAIN=""
   INSTALL_NO_DOMAIN=false
+  INSTALL_HSTS=""
   local agent_flag=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -447,12 +459,12 @@ install_parse_args() {
         shift
         continue
         ;;
-      --name=* | --core-port=* | --dashboard-port=* | --import-env=* | --dir=* | --bind-address=* | --public-host=* | --domain=*)
+      --name=* | --core-port=* | --dashboard-port=* | --import-env=* | --dir=* | --bind-address=* | --public-host=* | --domain=* | --hsts=*)
         flag="${1%%=*}"
         value="${1#*=}"
         shift
         ;;
-      --name | --core-port | --dashboard-port | --import-env | --dir | --bind-address | --public-host | --domain)
+      --name | --core-port | --dashboard-port | --import-env | --dir | --bind-address | --public-host | --domain | --hsts)
         flag="$1"
         if [ "$#" -lt 2 ]; then
           value=""
@@ -519,6 +531,13 @@ install_parse_args() {
         fi
         INSTALL_DOMAIN="$(install_lower "$value")"
         ;;
+      --hsts)
+        if ! install_valid_hsts "$value"; then
+          printf 'Invalid --hsts "%s": use host (the default: just the domain), subdomains or preload.\n' "$value" >&2
+          return 1
+        fi
+        INSTALL_HSTS="$value"
+        ;;
       --import-env) INSTALL_IMPORT_ENV="$value" ;;
       --dir) INSTALL_DIR="$value" ;;
     esac
@@ -540,7 +559,11 @@ install_parse_args() {
     install_usage >&2
     return 1
   fi
-  if [ -n "$INSTALL_DOMAIN" ]; then
+  for value in --domain --hsts; do
+    case "$value" in
+      --domain) [ -n "$INSTALL_DOMAIN" ] || continue ;;
+      --hsts) [ -n "$INSTALL_HSTS" ] || continue ;;
+    esac
     flag=""
     if [ "$INSTALL_NO_DOMAIN" = true ]; then
       flag=--no-domain
@@ -552,11 +575,15 @@ install_parse_args() {
       flag=--public-host
     fi
     if [ -n "$flag" ]; then
-      printf -- '--domain and %s contradict each other -- pick one.\n\n' "$flag" >&2
+      if [ "$value" = --domain ]; then
+        printf -- '--domain and %s contradict each other -- pick one.\n\n' "$flag" >&2
+      else
+        printf -- '--hsts and %s contradict each other -- --hsts only applies with --domain.\n\n' "$flag" >&2
+      fi
       install_usage >&2
       return 1
     fi
-  fi
+  done
   INSTALL_PROJECT="$(install_project_for_name "$INSTALL_NAME")"
   if [ -z "$INSTALL_DIR" ]; then
     if [ -z "${HOME:-}" ]; then
@@ -635,6 +662,81 @@ install_domain_wanted() {
   install_valid_domain "$domain" || domain=""
   echo "$domain"
   return 0
+}
+
+# True (0) iff mode is an --hsts mode: host, subdomains or preload.
+install_valid_hsts() {
+  case "$1" in
+    host | subdomains | preload) return 0 ;;
+  esac
+  return 1
+}
+
+# Echoes the HSTS mode this install should send (ADR-0277's 2026-11-21
+# amendment): host, subdomains or preload, or "" when DOMAIN (from
+# install_domain_wanted) is "" -- HSTS only exists at a domain. FLAG_HSTS
+# is INSTALL_HSTS (already validated); with none, EXISTING_ENV's
+# FOZZIE_HSTS if it's still a valid mode, else host. Always returns 0.
+#   install_hsts_wanted EXISTING_ENV FLAG_HSTS DOMAIN
+install_hsts_wanted() {
+  local existing="$1" flag="$2" domain="$3" mode
+  if [ -z "$domain" ]; then
+    echo ""
+    return 0
+  fi
+  mode="$flag"
+  if [ -z "$mode" ]; then
+    mode="$(install_env_get "$existing" FOZZIE_HSTS)"
+    install_valid_hsts "$mode" || mode=host
+  fi
+  echo "$mode"
+  return 0
+}
+
+# Echoes the Strict-Transport-Security value for an HSTS mode: a year
+# (31536000 seconds) for host or "", plus includeSubDomains for
+# subdomains, plus preload for preload (hstspreload.org requires
+# includeSubDomains and at least a year with preload). Returns 1 for any
+# other mode.
+install_hsts_value() {
+  case "$1" in
+    "" | host) echo "max-age=31536000" ;;
+    subdomains) echo "max-age=31536000; includeSubDomains" ;;
+    preload) echo "max-age=31536000; includeSubDomains; preload" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Prints the Caddyfile the caddy service runs with --domain (ADR-0277's
+# 2026-11-21 amendment), which install.sh writes to <install dir>/Caddyfile
+# on every run. A bare site address keeps what `caddy reverse-proxy` did:
+# automatic HTTPS, the HTTP->HTTPS redirect, and reverse_proxy passing the
+# original Host through. On top, the standard security headers -- each
+# "?", so it's only set when the response doesn't already have it (the
+# app's own, stricter headers, such as an attachment's sandbox CSP, win)
+# -- and Server, Via and X-Powered-By removed. DOMAIN must already pass
+# install_valid_domain, so writing it as is can't inject anything.
+# HSTS_MODE is install_hsts_wanted's answer. Returns 1 for a bad mode.
+#   install_caddyfile DOMAIN HSTS_MODE
+install_caddyfile() {
+  local domain="$1" hsts
+  hsts="$(install_hsts_value "$2")" || return 1
+  printf '%s\n' \
+    "# Managed by the Fozzie installer (--domain): rewritten on every run, so edits here are overwritten." \
+    "$domain {" \
+    $'\theader {' \
+    $'\t\t?Strict-Transport-Security "'"$hsts"'"' \
+    $'\t\t?X-Content-Type-Options "nosniff"' \
+    $'\t\t?X-Frame-Options "DENY"' \
+    $'\t\t?Content-Security-Policy "frame-ancestors \'none\'"' \
+    $'\t\t?Referrer-Policy "strict-origin-when-cross-origin"' \
+    $'\t\t?Permissions-Policy "camera=(), microphone=(), geolocation=()"' \
+    $'\t\t-Server' \
+    $'\t\t-Via' \
+    $'\t\t-X-Powered-By' \
+    $'\t}' \
+    $'\treverse_proxy dashboard:5173' \
+    "}"
 }
 
 # Echoes "<bind> <host>": the address the dashboard's port binds to and
@@ -946,6 +1048,7 @@ install_managed_value() {
     FOZZIE_CORE_PUBLIC_URL) printf '%s\n' "$m_FOZZIE_CORE_PUBLIC_URL" ;;
     FOZZIE_DOMAIN) printf '%s\n' "$m_FOZZIE_DOMAIN" ;;
     FOZZIE_TRUSTED_PROXY_HOPS) printf '%s\n' "$m_FOZZIE_TRUSTED_PROXY_HOPS" ;;
+    FOZZIE_HSTS) printf '%s\n' "$m_FOZZIE_HSTS" ;;
   esac
 }
 
@@ -981,6 +1084,10 @@ install_managed_value() {
 #   FOZZIE_TRUSTED_PROXY_HOPS: 2 with a domain (Caddy, then the dashboard's
 #     proxy, each append an X-Forwarded-For entry), otherwise left out so
 #     core-api defaults to 1;
+#   FOZZIE_HSTS (ADR-0277's 2026-11-21 amendment): flag, else existing
+#     (install_hsts_wanted EXISTING FLAG_HSTS FOZZIE_DOMAIN); written only
+#     with a domain and only when it isn't host, the default, so a domain
+#     install's .env is unchanged without --hsts and no domain drops it;
 #   FOZZIE_BIND_ADDRESS, FOZZIE_PUBLIC_HOST (ADR-0277): with a domain,
 #     127.0.0.1 and the domain; otherwise flag, existing (unless the
 #     existing ones came from a domain this run drops), then 127.0.0.1
@@ -999,7 +1106,7 @@ install_managed_value() {
 #     NEW_GHCR_USERNAME NEW_GHCR_TOKEN CANDIDATE_PASSWORD CANDIDATE_KEY \
 #     CANDIDATE_UPDATER_TOKEN PROJECT DIR CANDIDATE_HEARTBEAT_SECRET NAME \
 #     FLAG_AGENTS AGENTS_AVAILABLE FLAG_BIND_ADDRESS FLAG_PUBLIC_HOST \
-#     LOCALHOST_ONLY FLAG_DOMAIN NO_DOMAIN
+#     LOCALHOST_ONLY FLAG_DOMAIN NO_DOMAIN FLAG_HSTS
 install_merge_env() {
   local existing="$1" import="$2" flag_core="$3" flag_dash="$4"
   local new_user="$5" new_token="$6" cand_password="$7" cand_key="$8" cand_updater="$9"
@@ -1007,7 +1114,7 @@ install_merge_env() {
   local cand_heartbeat="${12:-}" m_FOZZIE_INSTANCE_NAME="${13:-}"
   local flag_agents="${14:-}" agents_available="${15:-false}"
   local flag_bind="${16:-}" flag_host="${17:-}" localhost_only="${18:-false}"
-  local flag_domain="${19:-}" no_domain="${20:-false}"
+  local flag_domain="${19:-}" no_domain="${20:-false}" flag_hsts="${21:-}"
   local key value line emitted=" " other_net=false
   local m_FOZZIE_VERSION="$LATEST_VERSION"
   local m_FOZZIE_CORE_API_IMAGE="$LATEST_CORE_API_IMAGE"
@@ -1019,7 +1126,7 @@ install_merge_env() {
   local m_CORE_API_PORT m_DASHBOARD_PORT m_GHCR_USERNAME m_GHCR_TOKEN
   local m_FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET m_FOZZIE_AGENTS_ENABLED m_COMPOSE_PROFILES=""
   local m_FOZZIE_BIND_ADDRESS m_FOZZIE_PUBLIC_HOST m_FOZZIE_DASHBOARD_URL m_FOZZIE_CORE_PUBLIC_URL
-  local m_FOZZIE_DOMAIN m_FOZZIE_TRUSTED_PROXY_HOPS=""
+  local m_FOZZIE_DOMAIN m_FOZZIE_TRUSTED_PROXY_HOPS="" m_FOZZIE_HSTS
 
   m_POSTGRES_PASSWORD="$(install_env_get "$import" POSTGRES_PASSWORD)"
   [ -n "$m_POSTGRES_PASSWORD" ] || m_POSTGRES_PASSWORD="$(install_env_get "$existing" POSTGRES_PASSWORD)"
@@ -1048,6 +1155,8 @@ install_merge_env() {
     m_FOZZIE_TRUSTED_PROXY_HOPS=2
     m_COMPOSE_PROFILES="${m_COMPOSE_PROFILES:+$m_COMPOSE_PROFILES,}domain"
   fi
+  m_FOZZIE_HSTS="$(install_hsts_wanted "$existing" "$flag_hsts" "$m_FOZZIE_DOMAIN")"
+  [ "$m_FOZZIE_HSTS" != host ] || m_FOZZIE_HSTS=""
 
   m_CORE_API_PORT="$flag_core"
   [ -n "$m_CORE_API_PORT" ] || m_CORE_API_PORT="$(install_env_get "$import" CORE_API_PORT)"
@@ -1673,7 +1782,7 @@ uninstall() {
       "Remove Fozzie and keep the data (and keep $ENV_FILE -- re-installing needs it):" \
       "  $dc_cmd down" \
       "Or delete everything, permanently (data, every backup, then the folder):" \
-      "  $dc_cmd down -v && rm \"$DIR/docker-compose.yml\" \"$ENV_FILE\" && rmdir \"$DIR\""
+      "  $dc_cmd down -v && rm -f \"$DIR/docker-compose.yml\" \"$ENV_FILE\" \"$DIR/Caddyfile\" && rmdir \"$DIR\""
   fi
   echo
   echo "Uninstalling Fozzie instance \"$NAME\" ($PROJECT):"
@@ -1694,7 +1803,7 @@ uninstall() {
     2)
       confirm_delete
       delete_instance_data
-      rm -f "$DIR/docker-compose.yml" "$ENV_FILE"
+      rm -f "$DIR/docker-compose.yml" "$ENV_FILE" "$DIR/Caddyfile"
       rmdir "$DIR" 2>/dev/null || true
       echo
       echo "To finish: log Docker out of GitHub's registry (docker logout ghcr.io), and"
@@ -1742,6 +1851,12 @@ main() {
       HAVE_IMPORT_PORTS=true
     fi
   fi
+  # --hsts only means something at a domain: refuse it before anything
+  # changes when this run ends up with none (no --domain, none remembered).
+  if [ -n "$INSTALL_HSTS" ] && [ "$INSTALL_UNINSTALL" != true ] &&
+    [ -z "$(install_domain_wanted "$ENV_FILE" "$INSTALL_DOMAIN" "$INSTALL_NO_DOMAIN" false)" ]; then
+    die "--hsts only applies with --domain: this instance isn't served at a domain. Nothing changed."
+  fi
   if [ "$INSTALL_UNINSTALL" != true ] && install_needs_ports "$NAME" "$HAVE_EXISTING_PORTS" "$HAVE_IMPORT_PORTS" "$INSTALL_CORE_PORT" "$INSTALL_DASHBOARD_PORT"; then
     die "The first install of instance \"$NAME\" needs two free ports, e.g.:" \
       "  curl -fsSL $FOZZIE_RELEASES_URL/install.sh | bash -s -- --name $NAME --core-port 4001 --dashboard-port 5174"
@@ -1788,7 +1903,7 @@ main() {
   command -v openssl >/dev/null 2>&1 || die "openssl isn't installed -- install it, then run this again."
 
   WORK="$(mktemp -d)"
-  trap 'stop_dbcheck; rm -rf "$WORK"; rm -f "$DIR/.env.tmp" "$DIR/docker-compose.yml.tmp"' EXIT
+  trap 'stop_dbcheck; rm -rf "$WORK"; rm -f "$DIR/.env.tmp" "$DIR/docker-compose.yml.tmp" "$DIR/Caddyfile.tmp"' EXIT
 
   if [ "$INSTALL_UNINSTALL" = true ]; then
     uninstall
@@ -1976,6 +2091,13 @@ main() {
       confirm "Open Fozzie's dashboard to your network?" || die "Nothing changed."
     fi
   fi
+  # HSTS preload can't be taken back quickly: say so once, when it's new.
+  if [ -n "$DOMAIN" ] &&
+    [ "$(install_hsts_wanted "$ENV_FILE" "$INSTALL_HSTS" "$DOMAIN")" = preload ] &&
+    [ "$(install_env_get "$ENV_FILE" FOZZIE_HSTS)" != preload ]; then
+    echo
+    echo "Warning: --hsts preload commits every subdomain of the registered domain to HTTPS, in every browser, and is very slow to undo."
+  fi
   # Warns only: DNS can be added after the install, and Caddy retries.
   if [ -n "$DOMAIN" ]; then
     check_domain_dns "$DOMAIN"
@@ -1999,7 +2121,7 @@ main() {
     "$(openssl rand -hex 24)" "$(openssl rand -base64 32)" "$(openssl rand -hex 32)" \
     "$PROJECT" "$DIR" "$(openssl rand -hex 32)" "$NAME" "$INSTALL_AGENTS" "$AGENTS_AVAILABLE" \
     "$INSTALL_BIND_ADDRESS" "$INSTALL_PUBLIC_HOST" "$INSTALL_LOCALHOST_ONLY" \
-    "$INSTALL_DOMAIN" "$INSTALL_NO_DOMAIN")" ||
+    "$INSTALL_DOMAIN" "$INSTALL_NO_DOMAIN" "$INSTALL_HSTS")" ||
     die "Couldn't write $ENV_FILE."
   # Hex for new installs (see install_url_safe_password); this catches one
   # made by 0.1.0's installer, whose password can never work. Its database
@@ -2025,6 +2147,13 @@ main() {
   local public_dashboard_url bind_address
   public_dashboard_url="$(install_env_get "$DIR/.env.tmp" FOZZIE_DASHBOARD_URL)"
   bind_address="$(install_env_get "$DIR/.env.tmp" FOZZIE_BIND_ADDRESS)"
+  # The caddy service's config, with a domain (ADR-0277's 2026-11-21
+  # amendment): generated here, since only docker-compose.yml is
+  # downloaded, and rewritten on every run.
+  if [ -n "$DOMAIN" ]; then
+    install_caddyfile "$DOMAIN" "$(install_env_get "$DIR/.env.tmp" FOZZIE_HSTS)" >"$DIR/Caddyfile.tmp" ||
+      die "Couldn't write $DIR/Caddyfile."
+  fi
 
   DC_FILE="$DIR/docker-compose.yml.tmp"
   DC_ENV="$DIR/.env.tmp"
@@ -2053,6 +2182,15 @@ main() {
 
   mv "$DIR/docker-compose.yml.tmp" "$DIR/docker-compose.yml"
   mv "$DIR/.env.tmp" "$ENV_FILE"
+  # A changed Caddyfile needs caddy recreated (below): its single-file bind
+  # mount stays on the old file, and `up -d` doesn't see the change.
+  local caddyfile_changed=false
+  if [ -f "$DIR/Caddyfile.tmp" ]; then
+    if [ -f "$DIR/Caddyfile" ] && ! cmp -s "$DIR/Caddyfile.tmp" "$DIR/Caddyfile"; then
+      caddyfile_changed=true
+    fi
+    mv "$DIR/Caddyfile.tmp" "$DIR/Caddyfile"
+  fi
   DC_FILE="$DIR/docker-compose.yml"
   DC_ENV="$ENV_FILE"
 
@@ -2078,13 +2216,23 @@ main() {
     die "" "Couldn't start Fozzie -- see the output above."
   fi
   case ",$profiles," in
-    *,domain,*) ;;
+    *,domain,*)
+      # A first Caddyfile, or one alongside a changed caddy service, is
+      # already in the container `up -d` (re)created; an unchanged one
+      # needs nothing.
+      if [ "$caddyfile_changed" = true ]; then
+        dc up -d --no-deps --force-recreate caddy ||
+          die "" "Couldn't restart Caddy with its new configuration -- see the output above. Caddy's logs:" \
+            "  $dc_cmd logs caddy"
+      fi
+      ;;
     *)
       # `up -d` with the profile off leaves a Caddy that's already running
-      # alone (--no-domain), still holding ports 80 and 443, so remove it.
-      # Its volumes stay, so turning the domain back on reuses the
-      # certificates. A no-op when there isn't one.
+      # alone (--no-domain), still holding ports 80 and 443, so remove it,
+      # and the Caddyfile it ran. Its volumes stay, so turning the domain
+      # back on reuses the certificates. A no-op when there isn't one.
       dc --profile domain rm -sf caddy >/dev/null 2>&1 || true
+      rm -f "$DIR/Caddyfile"
       ;;
   esac
   local agents_on=false

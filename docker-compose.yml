@@ -117,16 +117,25 @@ services:
       FOZZIE_LOGIN_FAILURES_PER_EMAIL: ${FOZZIE_LOGIN_FAILURES_PER_EMAIL:-}
       FOZZIE_LOGIN_RATE_WINDOW_MINUTES: ${FOZZIE_LOGIN_RATE_WINDOW_MINUTES:-}
       FOZZIE_PASSWORD_RESET_REQUESTS_PER_IP: ${FOZZIE_PASSWORD_RESET_REQUESTS_PER_IP:-}
-      # Federation limits (ADR-0308): the most items, characters per name,
-      # UTF-8 bytes per content body and bytes per whole response a sync
-      # may carry, and each partner's sync burst and refill per minute.
-      # Empty means the defaults: 5000 items, 500 characters, 262144
-      # bytes (256 KiB), 8388608 bytes (8 MiB), a burst of 10 and 2 a
-      # minute.
+      # Attachment upload limits (ADR-0138's storage-limits amendment):
+      # uploads per person per hour, and the free-disk guard's floor (an
+      # upload must leave at least this percent of the disk, and this
+      # many MB, free). Empty means the defaults: 100, 10 and 2048.
+      # Per-person quotas and the instance cap are admin settings.
+      FOZZIE_ATTACHMENT_UPLOADS_PER_HOUR: ${FOZZIE_ATTACHMENT_UPLOADS_PER_HOUR:-}
+      FOZZIE_ATTACHMENT_MIN_FREE_PERCENT: ${FOZZIE_ATTACHMENT_MIN_FREE_PERCENT:-}
+      FOZZIE_ATTACHMENT_MIN_FREE_MB: ${FOZZIE_ATTACHMENT_MIN_FREE_MB:-}
+      # Federation limits (ADR-0308, ADR-0321): the most items, characters
+      # per name, UTF-8 bytes per content body, bytes per whole response
+      # and dependencies a sync may carry, and each partner's sync burst
+      # and refill per minute. Empty means the defaults: 5000 items, 500
+      # characters, 262144 bytes (256 KiB), 8388608 bytes (8 MiB), 20000
+      # dependencies, a burst of 10 and 2 a minute.
       FOZZIE_FEDERATION_MAX_SNAPSHOT_ITEMS: ${FOZZIE_FEDERATION_MAX_SNAPSHOT_ITEMS:-}
       FOZZIE_FEDERATION_MAX_NAME_LENGTH: ${FOZZIE_FEDERATION_MAX_NAME_LENGTH:-}
       FOZZIE_FEDERATION_MAX_CONTENT_BYTES: ${FOZZIE_FEDERATION_MAX_CONTENT_BYTES:-}
       FOZZIE_FEDERATION_MAX_SNAPSHOT_BYTES: ${FOZZIE_FEDERATION_MAX_SNAPSHOT_BYTES:-}
+      FOZZIE_FEDERATION_MAX_SNAPSHOT_DEPENDENCIES: ${FOZZIE_FEDERATION_MAX_SNAPSHOT_DEPENDENCIES:-}
       FOZZIE_FEDERATION_SYNC_BURST: ${FOZZIE_FEDERATION_SYNC_BURST:-}
       FOZZIE_FEDERATION_SYNC_PER_MINUTE: ${FOZZIE_FEDERATION_SYNC_PER_MINUTE:-}
       # Rate-limit by the X-Forwarded-For entry the outermost trusted proxy
@@ -229,6 +238,17 @@ services:
       BACKUP_ROOT: /data/backups
       BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
       BACKUP_RETAIN_COUNT: ${BACKUP_RETAIN_COUNT:-14}
+      # Optional off-site copy to S3-compatible storage, after each local
+      # backup (docs/DEPLOYMENT.md §6, ADR-0319). Blank BACKUP_S3_BUCKET = off.
+      BACKUP_S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:-}
+      BACKUP_S3_REGION: ${BACKUP_S3_REGION:-}
+      BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
+      BACKUP_S3_PREFIX: ${BACKUP_S3_PREFIX:-}
+      BACKUP_S3_ACCESS_KEY_ID: ${BACKUP_S3_ACCESS_KEY_ID:-}
+      BACKUP_S3_SECRET_ACCESS_KEY: ${BACKUP_S3_SECRET_ACCESS_KEY:-}
+      BACKUP_S3_PASSPHRASE: ${BACKUP_S3_PASSPHRASE:-}
+      BACKUP_S3_RETAIN_COUNT: ${BACKUP_S3_RETAIN_COUNT:-}
+      BACKUP_S3_FORCE_PATH_STYLE: ${BACKUP_S3_FORCE_PATH_STYLE:-}
     volumes:
       - fozzie_git_repos_local:/data/git-repos
       - fozzie_attachments_local:/data/attachments
@@ -322,6 +342,7 @@ services:
       # this environment.
       FOZZIE_AGENT_IMAGE: ${FOZZIE_AGENT_IMAGE:-}
       FOZZIE_API_RETRY_SECONDS: ${FOZZIE_API_RETRY_SECONDS:-300}
+      FOZZIE_SETUP_TIMEOUT_MINUTES: ${FOZZIE_SETUP_TIMEOUT_MINUTES:-15}
       # No UI runner on tester installs, so Run UI tests is skipped as not
       # applicable and the UI gate doesn't apply (ADR-0240), and there's
       # no Playwright pre-pull either.
@@ -342,15 +363,22 @@ services:
   # installer's --domain, ADR-0277's 2026-11-19 amendment): Caddy gets and
   # renews a Let's Encrypt certificate for FOZZIE_DOMAIN by itself,
   # redirects HTTP to HTTPS, and forwards everything to the dashboard over
-  # the Compose network. The dashboard and core-api stay on loopback; only
-  # this service listens publicly. No Caddyfile: `caddy reverse-proxy`
-  # does all of it, and passes the original Host header through.
+  # the Compose network, passing the original Host header through. The
+  # dashboard and core-api stay on loopback; only this service listens
+  # publicly.
   #
-  # Only in the "domain" profile (COMPOSE_PROFILES=...,domain in .env).
-  # The domain has a placeholder default rather than `:?` for the same
-  # reason as the orchestrator's image above: Compose checks every
-  # service's interpolation, profiled out or not. The placeholder is
-  # never served: install.sh only turns the profile on with a domain.
+  # It runs the Caddyfile install.sh writes beside this file
+  # (install_caddyfile, ADR-0277's 2026-11-21 amendment): the domain, the
+  # reverse proxy, and the standard security headers (HSTS, nosniff,
+  # framing, referrer and permissions policies), each only where the app
+  # hasn't set its own, with Server, Via and X-Powered-By removed.
+  # Re-running install.sh rewrites it, so edits to it are overwritten. The
+  # long syntax with create_host_path: false makes a missing file an
+  # error, rather than Docker creating a root-owned directory there.
+  #
+  # Only in the "domain" profile (COMPOSE_PROFILES=...,domain in .env), and
+  # install.sh only turns it on with a domain, so the domain lives in the
+  # Caddyfile alone, not in an interpolation here.
   #
   # The certificates (and Caddy's account key) live in fozzie_caddy_data.
   # Keep it: Let's Encrypt rate-limits new certificates, and --no-domain
@@ -361,13 +389,19 @@ services:
     profiles: ["domain"]
     # One line on purpose: scripts/test.sh checks it as written.
     # prettier-ignore
-    command: ["caddy", "reverse-proxy", "--from", "${FOZZIE_DOMAIN:-fozzie-domain-not-set}", "--to", "dashboard:5173"]
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
     ports:
       - "0.0.0.0:80:80"
       - "0.0.0.0:443:443"
     volumes:
       - fozzie_caddy_data:/data
       - fozzie_caddy_config:/config
+      - type: bind
+        source: ${FOZZIE_INSTALL_DIR:?Run install.sh -- it sets FOZZIE_INSTALL_DIR in .env}/Caddyfile
+        target: /etc/caddy/Caddyfile
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on:
       - dashboard
     restart: unless-stopped
