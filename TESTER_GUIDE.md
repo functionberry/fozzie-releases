@@ -12,31 +12,42 @@ to your network; see
 - **Docker.** Docker Desktop on macOS or Windows, or Docker Engine on
   Linux. It needs Docker Compose **v2.20.0 or newer**: check with
   `docker compose version`.
-- **A GitHub account.** Fozzie's images are in GitHub's container
-  registry, and access is per account.
+- **A Fozria account on app.functionberry.com** (Mark invites you).
+  Fozzie's images are on `registry.functionberry.com`, and access is per
+  account.
 - **About 2 GB of free disk** for the images, plus whatever your data
   grows to.
 
 ## Getting access
 
-1. Send Mark your GitHub username.
-2. GitHub then emails you an invite for each of the five Fozzie packages
-   (`fozzie-dist-core-api`, `fozzie-dist-dashboard`, `fozzie-dist-updater`,
-   `fozzie-dist-agent` and `fozzie-dist-orchestrator`). Accept all five. Until you do, the installer
-   can't download Fozzie.
+1. Mark sends you an invite to <https://app.functionberry.com>. Accept it
+   and create your account.
+2. Mark adds you to the **Release testers** group. Until he has, the
+   installer can log in but can't download Fozzie.
 
-## Creating a GitHub token
+## Creating an API token
 
-The installer needs a GitHub **classic** personal access token to download
-the images. Create one here:
+The installer logs in to `registry.functionberry.com` with your Fozria
+account's email and an **API token** (your account password won't work).
+To make one:
 
-<https://github.com/settings/tokens/new?scopes=read:packages&description=Fozzie%20beta>
+1. Sign in at <https://app.functionberry.com>.
+2. Open **Your settings → API tokens** and create a token.
+3. Copy it when it's shown: it's only shown once. It's 64 characters,
+   digits and the letters a to f.
 
-- Tick **only** `read:packages`. Fozzie needs nothing else, so don't give
-  it anything else.
-- Pick whatever expiry you're happy with. When it expires, create a new
-  one and re-run the installer.
-- Copy the token when GitHub shows it: it's only shown once.
+Pick whatever expiry you're happy with. When it expires, make a new one
+and re-run the installer.
+
+### Already testing with a GitHub token?
+
+Nothing changes for you yet. An install that already has a GitHub token
+keeps downloading from GitHub's registry (`ghcr.io`), and the installer
+won't ask for anything new. Switching to a Fozria account comes with a
+later update. If your GitHub token expires before then, create a new
+**classic** token with only `read:packages` ticked at
+<https://github.com/settings/tokens/new?scopes=read:packages&description=Fozzie%20beta>,
+and re-run the installer.
 
 ## Installing
 
@@ -46,21 +57,25 @@ In a terminal, run:
 curl -fsSL https://functionberry.github.io/fozzie-releases/install.sh | bash
 ```
 
-It checks Docker, then asks for your GitHub username and the token (the
+It checks Docker, then asks for your Fozria email and API token (the
 token isn't shown as you type). It downloads Fozzie, starts it, and opens
 your browser on a "create your account" page. The first install can take
 a few minutes.
 
-If you've already run `docker login ghcr.io` yourself, it may not need to
-ask. It then offers to save your username and token anyway: in-app
-updates will need them (see [Updating](#updating)). You can skip that and
+Once you've signed in, you can add one of the two example projects
+(Kitchen renovation, or Example: launch a simple website) from **Help →
+Getting started → Add an example**, to have something to click around.
+
+If you've already run `docker login registry.functionberry.com` yourself,
+it may not need to ask. It then offers to save your email and API token
+anyway: in-app updates will need them (see [Updating](#updating)). You can skip that and
 add them later by re-running the installer.
 
 To run it without any questions, set the credentials in the environment
 and pass `--yes`:
 
 ```sh
-curl -fsSL https://functionberry.github.io/fozzie-releases/install.sh | GHCR_USERNAME=you GHCR_TOKEN=ghp_... bash -s -- --yes
+curl -fsSL https://functionberry.github.io/fozzie-releases/install.sh | FOZRIA_REGISTRY_USERNAME=you@example.com FOZRIA_REGISTRY_TOKEN=... bash -s -- --yes
 ```
 
 ## More than one instance, and other ports
@@ -144,19 +159,25 @@ server.
 ## Where things live
 
 Fozzie installs into `~/fozzie` (or `~/fozzie-<name>` for a named
-instance). That directory holds two files, three with `--domain`:
+instance). That directory holds two files, three with `--domain` and five
+with `--registry-domain`:
 
 - `docker-compose.yml`, which describes the containers. The installer
   replaces it on every run.
 - `.env`, which holds your instance's settings and **secrets**: its
-  database password, its encryption key and **your GitHub token**, which
-  is kept there so that in-app updates can download new versions. It's
+  database password, its encryption key and **your Fozria API token**
+  (or, if you're still on one, your GitHub token), which is kept there so that in-app updates can download new versions. It's
   readable only by you (`chmod 600`). Don't share it or commit it
   anywhere. The installer keeps any line you add to it, for example SMTP
   settings.
 - `Caddyfile`, only with `--domain`: the settings of the Caddy container
   that serves HTTPS. The installer rewrites it on every run, and removes
   it with `--no-domain`.
+- `registry-config.yml` and `registry-supervisor.sh`, only with
+  `--registry-domain`: the settings and the start-up script of the
+  release registry container. The installer rewrites them on every run,
+  and removes them with `--no-registry` (or `--no-domain`). Its stored
+  images stay in their Docker volume.
 
 Your data itself (the database, git repositories, attachments and
 backups) lives in Docker volumes, not in that directory. It can only be
@@ -285,10 +306,13 @@ data can't be opened (see
 cd ~/fozzie
 docker compose -p fozzie-local --env-file .env down -v
 cd ~ && rm -rf ~/fozzie
-docker logout ghcr.io
+docker logout registry.functionberry.com
 ```
 
-Then revoke the token at <https://github.com/settings/tokens>.
+Then revoke the API token on <https://app.functionberry.com>, under **Your
+settings → API tokens**. If you used a GitHub token, also run
+`docker logout ghcr.io` and revoke it at
+<https://github.com/settings/tokens>.
 
 Only delete the `~/fozzie` directory after `down -v`: deleting it after a
 plain `down` leaves your data behind with nothing that can open it.
@@ -476,10 +500,26 @@ Linux), wait until it says it's running, then run the installer again.
 **"Docker Compose … is too old."** Update Docker Desktop, or the Compose
 plugin on Linux, to one with Compose v2.20.0 or newer, then try again.
 
+**"app.functionberry.com didn't accept that email and API token".** The
+email is wrong, or the token has expired, been revoked, or isn't an API
+token (your account password won't work). Make a new one (see
+[Creating an API token](#creating-an-api-token)) and run the installer
+again.
+
+**"Your Fozria account isn't in Release testers".** Your token works, but
+your account can't download Fozzie yet. Ask Mark to add your email to
+Release testers, then run the installer again.
+
+**"Too many login attempts".** Too many tries from your network in a short
+time. Wait a few minutes, then run the installer again.
+
+The next three are for testers still on a GitHub token (see
+[Already testing with a GitHub token?](#already-testing-with-a-github-token)).
+
 **`unauthorized`, or "GitHub didn't accept that username and token".** The
 username or token is wrong, or the token has expired or been revoked.
-Create a new token (see [Creating a GitHub token](#creating-a-github-token))
-and run the installer again.
+Create a new classic token with only `read:packages` ticked and run the
+installer again.
 
 **`denied`, or "your GitHub account hasn't been given access".** Your
 account doesn't have access to the packages yet. Check you've accepted

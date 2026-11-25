@@ -30,8 +30,13 @@
 # existing instance's data opens with this .env's database password (if
 # it doesn't, refuses, or offers to keep the data or start fresh, rather
 # than generate a new password over it); reads the latest
-# release's image refs from latest.env; logs in to ghcr.io if the images
-# need it (walking you through creating a read:packages token); pulls the
+# release's image refs from latest.env; downloads the images (ADR-0329):
+# when the release is also on registry.functionberry.com, from there,
+# logged in with your Fozria email and API token (asked for if they
+# aren't in the environment or .env), falling back to ghcr.io only if the
+# registry can't be reached; when it isn't, or the install only has a
+# GitHub token so far, from ghcr.io, logging in if the images need it
+# (walking you through creating a read:packages token); pulls the
 # agent and orchestrator images when agents are on (carrying on without
 # agents if it can't); writes docker-compose.yml and .env (chmod 600,
 # secrets generated once and kept) into ~/fozzie or ~/fozzie-<name>; takes
@@ -176,6 +181,20 @@ INSTALL_NAME_REGEX="^[${INSTALL_LOWER}${INSTALL_DIGITS}][${INSTALL_LOWER}${INSTA
 INSTALL_GHCR_USERNAME_REGEX="^[${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}-]+\$"
 INSTALL_GHCR_TOKEN_REGEX="^[${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}_]+\$"
 
+# The Fozria release registry and the app its accounts and API tokens live
+# in (ADR-0322, ADR-0329).
+INSTALL_FOZRIA_REGISTRY=registry.functionberry.com
+INSTALL_FOZRIA_APP=app.functionberry.com
+INSTALL_FOZRIA_TOKENS_WHERE="Your settings → API tokens"
+
+# What a Fozria account's email and an API token can look like -- checked
+# before either is used, so neither can inject anything into .env. The
+# email: letters, digits and . _ + - before a single @, then a dotted host
+# of letters, digits and - labels. Anything it accepts also passes
+# INSTALL_ENV_VALUE_REGEX. The token: 64 lowercase hex (authCredential.ts).
+INSTALL_FOZRIA_USERNAME_REGEX="^[${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}._+-]+@[${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}-]+(\\.[${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}-]+)+\$"
+INSTALL_FOZRIA_TOKEN_REGEX='^[0123456789abcdef]{64}$'
+
 # Every value the installer writes into .env is from this set, so it's
 # written unquoted and reads back the same to Compose and to
 # install_env_get alike (base64 secrets, digest refs, ports, versions,
@@ -183,7 +202,7 @@ INSTALL_GHCR_TOKEN_REGEX="^[${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}_]+
 INSTALL_ENV_VALUE_REGEX="^[${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}+/=._:@,-]+\$"
 
 # The keys install_merge_env owns, in the order it appends them.
-INSTALL_MANAGED_KEYS="FOZZIE_VERSION FOZZIE_CORE_API_IMAGE FOZZIE_DASHBOARD_IMAGE FOZZIE_UPDATER_IMAGE POSTGRES_PASSWORD FOZZIE_ENCRYPTION_KEY FOZZIE_UPDATER_TOKEN CORE_API_PORT DASHBOARD_PORT GHCR_USERNAME GHCR_TOKEN COMPOSE_PROJECT FOZZIE_INSTALL_DIR FOZZIE_AGENT_IMAGE FOZZIE_ORCHESTRATOR_IMAGE FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET FOZZIE_INSTANCE_NAME FOZZIE_AGENTS_ENABLED COMPOSE_PROFILES FOZZIE_BIND_ADDRESS FOZZIE_PUBLIC_HOST FOZZIE_DASHBOARD_URL FOZZIE_CORE_PUBLIC_URL FOZZIE_DOMAIN FOZZIE_TRUSTED_PROXY_HOPS FOZZIE_HSTS"
+INSTALL_MANAGED_KEYS="FOZZIE_VERSION FOZZIE_CORE_API_IMAGE FOZZIE_DASHBOARD_IMAGE FOZZIE_UPDATER_IMAGE POSTGRES_PASSWORD FOZZIE_ENCRYPTION_KEY FOZZIE_UPDATER_TOKEN CORE_API_PORT DASHBOARD_PORT GHCR_USERNAME GHCR_TOKEN COMPOSE_PROJECT FOZZIE_INSTALL_DIR FOZZIE_AGENT_IMAGE FOZZIE_ORCHESTRATOR_IMAGE FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET FOZZIE_INSTANCE_NAME FOZZIE_AGENTS_ENABLED COMPOSE_PROFILES FOZZIE_BIND_ADDRESS FOZZIE_PUBLIC_HOST FOZZIE_DASHBOARD_URL FOZZIE_CORE_PUBLIC_URL FOZZIE_DOMAIN FOZZIE_TRUSTED_PROXY_HOPS FOZZIE_HSTS FOZZIE_REGISTRY_DOMAIN FOZZIE_REGISTRY_HTTP_SECRET FOZRIA_REGISTRY_USERNAME FOZRIA_REGISTRY_TOKEN"
 
 INSTALL_ENV_HEADER="# Managed by the Fozzie installer: it rewrites the keys it manages on every run and keeps every other line. Holds secrets -- keep it private."
 
@@ -246,6 +265,15 @@ Options:
   --no-domain             Stop serving at the domain: removes the Caddy
                           container (keeping its certificates) and goes
                           back to this machine only.
+  --registry-domain HOST  Also serve a release registry at https://HOST,
+                          through the same Caddy on ports 80 and 443.
+                          Needs --domain (or a remembered domain) and a
+                          different HOST, whose DNS A record must point at
+                          this machine. Pulls and pushes need a Fozria API
+                          token. Remembered by later runs and updates.
+  --no-registry           Stop serving the release registry: removes its
+                          container and its two files, keeping the volume
+                          with its stored images.
   --uninstall             Remove this instance: asks whether to keep its data
                           (and .env, which that data needs) or delete
                           everything. Needs a terminal; --yes doesn't skip it.
@@ -253,8 +281,16 @@ Options:
   --help, -h              Show this help.
 
 Environment:
+  FOZRIA_REGISTRY_USERNAME, FOZRIA_REGISTRY_TOKEN
+                              Your Fozria account's email and an API token
+                              from app.functionberry.com (Your settings →
+                              API tokens), to log in to
+                              registry.functionberry.com without being
+                              asked.
   GHCR_USERNAME, GHCR_TOKEN   Your GitHub username and read:packages token,
-                              to log in to ghcr.io without being asked.
+                              to log in to ghcr.io without being asked: for
+                              existing testers still on a GitHub token, and
+                              older releases that are only on ghcr.io.
 USAGE
 }
 
@@ -390,14 +426,19 @@ install_default_dir() {
 # "" when not given) and INSTALL_NO_DOMAIN (true/false; see
 # install_domain_wanted, ADR-0277's 2026-11-19 amendment) and INSTALL_HSTS
 # (--hsts: host, subdomains or preload, "" when not given; see
-# install_hsts_wanted, ADR-0277's 2026-11-21 amendment). Takes both
-# "--flag value" and "--flag=value". An unknown flag, a missing value, an
-# invalid name, port, bind address, public host, domain or HSTS mode, both
-# agent flags at once, or network flags that contradict each other
+# install_hsts_wanted, ADR-0277's 2026-11-21 amendment), and
+# INSTALL_REGISTRY_DOMAIN (--registry-domain, lowercased, "" when not
+# given) and INSTALL_NO_REGISTRY (true/false; see
+# install_registry_domain_wanted, ADR-0325). Takes both "--flag value"
+# and "--flag=value". An unknown flag, a missing value, an invalid name,
+# port, bind address, public host, domain, registry domain or HSTS mode,
+# both agent flags at once, or network flags that contradict each other
 # (--localhost-only with --bind-address or --public-host; a loopback
-# --bind-address with --public-host; --domain or --hsts with --no-domain,
-# --localhost-only, --bind-address or --public-host) prints why and the
-# usage to stderr and returns 1. INSTALL_DIR defaults from $HOME.
+# --bind-address with --public-host; --domain, --hsts or
+# --registry-domain with --no-domain, --localhost-only, --bind-address or
+# --public-host; --registry-domain with --no-registry, or equal to
+# --domain) prints why and the usage to stderr and returns 1. INSTALL_DIR
+# defaults from $HOME.
 install_parse_args() {
   local flag value
   INSTALL_NAME=local
@@ -416,6 +457,8 @@ install_parse_args() {
   INSTALL_DOMAIN=""
   INSTALL_NO_DOMAIN=false
   INSTALL_HSTS=""
+  INSTALL_REGISTRY_DOMAIN=""
+  INSTALL_NO_REGISTRY=false
   local agent_flag=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -444,6 +487,11 @@ install_parse_args() {
         shift
         continue
         ;;
+      --no-registry)
+        INSTALL_NO_REGISTRY=true
+        shift
+        continue
+        ;;
       --no-agents | --with-agents)
         if [ -n "$agent_flag" ] && [ "$agent_flag" != "$1" ]; then
           printf '%s and %s contradict each other -- pick one.\n\n' "$agent_flag" "$1" >&2
@@ -459,12 +507,12 @@ install_parse_args() {
         shift
         continue
         ;;
-      --name=* | --core-port=* | --dashboard-port=* | --import-env=* | --dir=* | --bind-address=* | --public-host=* | --domain=* | --hsts=*)
+      --name=* | --core-port=* | --dashboard-port=* | --import-env=* | --dir=* | --bind-address=* | --public-host=* | --domain=* | --hsts=* | --registry-domain=*)
         flag="${1%%=*}"
         value="${1#*=}"
         shift
         ;;
-      --name | --core-port | --dashboard-port | --import-env | --dir | --bind-address | --public-host | --domain | --hsts)
+      --name | --core-port | --dashboard-port | --import-env | --dir | --bind-address | --public-host | --domain | --hsts | --registry-domain)
         flag="$1"
         if [ "$#" -lt 2 ]; then
           value=""
@@ -531,6 +579,13 @@ install_parse_args() {
         fi
         INSTALL_DOMAIN="$(install_lower "$value")"
         ;;
+      --registry-domain)
+        if ! install_valid_domain "$value"; then
+          printf 'Invalid --registry-domain "%s": give a public DNS name such as registry.example.com -- not an IP address, localhost, http:// or a port.\n' "$value" >&2
+          return 1
+        fi
+        INSTALL_REGISTRY_DOMAIN="$(install_lower "$value")"
+        ;;
       --hsts)
         if ! install_valid_hsts "$value"; then
           printf 'Invalid --hsts "%s": use host (the default: just the domain), subdomains or preload.\n' "$value" >&2
@@ -559,10 +614,16 @@ install_parse_args() {
     install_usage >&2
     return 1
   fi
-  for value in --domain --hsts; do
+  if [ -n "$INSTALL_REGISTRY_DOMAIN" ] && [ "$INSTALL_NO_REGISTRY" = true ]; then
+    printf -- '--registry-domain and --no-registry contradict each other -- pick one.\n\n' >&2
+    install_usage >&2
+    return 1
+  fi
+  for value in --domain --hsts --registry-domain; do
     case "$value" in
       --domain) [ -n "$INSTALL_DOMAIN" ] || continue ;;
       --hsts) [ -n "$INSTALL_HSTS" ] || continue ;;
+      --registry-domain) [ -n "$INSTALL_REGISTRY_DOMAIN" ] || continue ;;
     esac
     flag=""
     if [ "$INSTALL_NO_DOMAIN" = true ]; then
@@ -577,6 +638,8 @@ install_parse_args() {
     if [ -n "$flag" ]; then
       if [ "$value" = --domain ]; then
         printf -- '--domain and %s contradict each other -- pick one.\n\n' "$flag" >&2
+      elif [ "$value" = --registry-domain ]; then
+        printf -- "--registry-domain and %s contradict each other -- the registry needs the app's --domain.\n\n" "$flag" >&2
       else
         printf -- '--hsts and %s contradict each other -- --hsts only applies with --domain.\n\n' "$flag" >&2
       fi
@@ -584,6 +647,11 @@ install_parse_args() {
       return 1
     fi
   done
+  if [ -n "$INSTALL_REGISTRY_DOMAIN" ] && [ "$INSTALL_REGISTRY_DOMAIN" = "$INSTALL_DOMAIN" ]; then
+    printf -- "--registry-domain must differ from --domain -- the registry is its own site.\n\n" >&2
+    install_usage >&2
+    return 1
+  fi
   INSTALL_PROJECT="$(install_project_for_name "$INSTALL_NAME")"
   if [ -z "$INSTALL_DIR" ]; then
     if [ -z "${HOME:-}" ]; then
@@ -664,6 +732,44 @@ install_domain_wanted() {
   return 0
 }
 
+# Echoes the domain this install should serve its release registry at
+# (ADR-0325), or "" for none. FLAG_REGISTRY_DOMAIN is
+# INSTALL_REGISTRY_DOMAIN (already validated and lowercased), NO_REGISTRY
+# is INSTALL_NO_REGISTRY and DOMAIN is install_domain_wanted's answer. In
+# order:
+#   no DOMAIN: none -- the token realm is on the app's domain, behind the
+#     same Caddy, so --no-domain or any other network flag drops the
+#     registry too;
+#   --registry-domain: that domain;
+#   --no-registry: none;
+#   otherwise EXISTING_ENV's FOZZIE_REGISTRY_DOMAIN, lowercased, if it's
+#     still valid and differs from DOMAIN, so a re-run keeps it (and
+#     in-app updates never rewrite it).
+# Always returns 0.
+#   install_registry_domain_wanted EXISTING_ENV FLAG_REGISTRY_DOMAIN NO_REGISTRY DOMAIN
+install_registry_domain_wanted() {
+  local existing="$1" flag="$2" no_registry="${3:-false}" domain="$4"
+  local registry
+  if [ -z "$domain" ]; then
+    echo ""
+    return 0
+  fi
+  if [ -n "$flag" ]; then
+    echo "$flag"
+    return 0
+  fi
+  if [ "$no_registry" = true ]; then
+    echo ""
+    return 0
+  fi
+  registry="$(install_lower "$(install_env_get "$existing" FOZZIE_REGISTRY_DOMAIN)")"
+  if ! install_valid_domain "$registry" || [ "$registry" = "$domain" ]; then
+    registry=""
+  fi
+  echo "$registry"
+  return 0
+}
+
 # True (0) iff mode is an --hsts mode: host, subdomains or preload.
 install_valid_hsts() {
   case "$1" in
@@ -716,14 +822,33 @@ install_hsts_value() {
 # app's own, stricter headers, such as an attachment's sandbox CSP, win)
 # -- and Server, Via and X-Powered-By removed. DOMAIN must already pass
 # install_valid_domain, so writing it as is can't inject anything.
-# HSTS_MODE is install_hsts_wanted's answer. Returns 1 for a bad mode.
-#   install_caddyfile DOMAIN HSTS_MODE
+# HSTS_MODE is install_hsts_wanted's answer. With REGISTRY_DOMAIN
+# (install_registry_domain_wanted's answer, ADR-0325), an empty line and
+# a second site follow: the same headers and HSTS, proxying to the
+# registry service. It has no request_body limit (image layers are big)
+# and needs no trusted_proxies (the registry trusts no forwarded
+# headers). Without it the output is exactly the one-site file. Returns 1
+# for a bad mode.
+#   install_caddyfile DOMAIN HSTS_MODE [REGISTRY_DOMAIN]
 install_caddyfile() {
-  local domain="$1" hsts
+  local domain="$1" hsts registry="${3:-}"
   hsts="$(install_hsts_value "$2")" || return 1
+  printf '%s\n' "# Managed by the Fozzie installer (--domain): rewritten on every run, so edits here are overwritten."
+  install_caddy_site "$domain" "$hsts" dashboard:5173
+  if [ -n "$registry" ]; then
+    printf '\n'
+    install_caddy_site "$registry" "$hsts" registry:5000
+  fi
+}
+
+# Prints one Caddyfile site block for install_caddyfile: the site
+# address, the security headers with HSTS value HSTS, and a
+# reverse_proxy to UPSTREAM.
+#   install_caddy_site SITE HSTS UPSTREAM
+install_caddy_site() {
+  local site="$1" hsts="$2" upstream="$3"
   printf '%s\n' \
-    "# Managed by the Fozzie installer (--domain): rewritten on every run, so edits here are overwritten." \
-    "$domain {" \
+    "$site {" \
     $'\theader {' \
     $'\t\t?Strict-Transport-Security "'"$hsts"'"' \
     $'\t\t?X-Content-Type-Options "nosniff"' \
@@ -735,8 +860,252 @@ install_caddyfile() {
     $'\t\t-Via' \
     $'\t\t-X-Powered-By' \
     $'\t}' \
-    $'\treverse_proxy dashboard:5173' \
+    $'\treverse_proxy '"$upstream" \
     "}"
+}
+
+# Prints the release registry's config (ADR-0325), which install.sh
+# writes to <install dir>/registry-config.yml with --registry-domain. The
+# registry container's supervisor (install_registry_supervisor) copies
+# it to /run/fozzie-registry/config.yml, switching the one
+# "enabled: false" line -- storage.maintenance.readonly's -- to true when
+# disk runs low, so that line must stay the only one. Token auth
+# (ADR-0322): every request needs a token from the app's realm, so
+# nothing is anonymous. delete is enabled for retention and GC; the token
+# service itself never grants it. http.secret isn't here: it comes from
+# REGISTRY_HTTP_SECRET in the environment, from .env. Both domains must
+# already pass install_valid_domain.
+#   install_registry_config REGISTRY_DOMAIN APP_DOMAIN
+install_registry_config() {
+  local registry="$1" app="$2"
+  cat <<CONFIG
+# Managed by the Fozzie installer (--registry-domain): rewritten on every run, so edits here are overwritten.
+version: 0.1
+log:
+  fields:
+    service: registry
+storage:
+  filesystem:
+    rootdirectory: /var/lib/registry
+  delete:
+    enabled: true
+  maintenance:
+    uploadpurging:
+      enabled: true
+      age: 168h
+      interval: 24h
+      dryrun: false
+    readonly:
+      enabled: false
+http:
+  addr: :5000
+  host: https://$registry
+  headers:
+    X-Content-Type-Options:
+      - nosniff
+auth:
+  token:
+    realm: https://$app/registry/token
+    service: $registry
+    issuer: fozria-token-service
+    rootcertbundle: /run/fozzie-registry/rootcerts.pem
+CONFIG
+}
+
+# Prints the supervisor that is the registry container's entrypoint
+# (ADR-0325): a POSIX sh script for the registry image's busybox. It
+# polls core-api for the token-signing certificate bundle (registry 2.8
+# reads rootcertbundle only at start, so a new bundle means a restart),
+# switches the registry to read-only when the disk is low (the same
+# margin as attachments), and stops it briefly for a daily garbage
+# collect. Printed from a quoted heredoc, so nothing in it expands.
+install_registry_supervisor() {
+  # The shebang is printed on its own: a line starting "#!" inside the
+  # published install.sh would be a second shebang there.
+  printf '%s\n' '#!/bin/sh'
+  cat <<'SUPERVISOR'
+# Managed by the Fozzie installer (--registry-domain): rewritten on every
+# run, so edits here are overwritten. The release registry's supervisor
+# (ADR-0325), run as the registry container's entrypoint.
+set -u
+
+log() {
+  printf 'fozzie-registry-supervisor: %s
+' "$*" >&2
+}
+
+# A positive integer, else the default ($2).
+positive_int() {
+  case "$1" in
+    "" | *[!0-9]*) echo "$2" ;;
+    *)
+      if [ "$1" -gt 0 ] 2>/dev/null; then echo "$1"; else echo "$2"; fi
+      ;;
+  esac
+}
+
+# Settings, from the environment (empty or not a positive integer means
+# the default): FOZZIE_REGISTRY_CERT_POLL_SECONDS (300),
+# FOZZIE_REGISTRY_GC_INTERVAL_SECONDS (86400; 0 turns GC off), and the
+# disk margin shared with attachments, FOZZIE_ATTACHMENT_MIN_FREE_PERCENT
+# (10, at most 100) and FOZZIE_ATTACHMENT_MIN_FREE_MB (2048). The paths
+# and URL are overridable for tests, as is
+# FOZZIE_REGISTRY_SUPERVISOR_ITERATIONS (unset: poll forever).
+SOURCE="${FOZZIE_REGISTRY_CONFIG_SOURCE:-/fozzie/registry-config.yml}"
+RUN="${FOZZIE_REGISTRY_RUN_DIR:-/run/fozzie-registry}"
+DATA="${FOZZIE_REGISTRY_DATA_DIR:-/var/lib/registry}"
+CERTS_URL="${FOZZIE_REGISTRY_CERTS_URL:-http://core-api:4000/registry/certs}"
+POLL="$(positive_int "${FOZZIE_REGISTRY_CERT_POLL_SECONDS:-}" 300)"
+case "${FOZZIE_REGISTRY_GC_INTERVAL_SECONDS:-}" in
+  0) GC_INTERVAL=0 ;;
+  *) GC_INTERVAL="$(positive_int "${FOZZIE_REGISTRY_GC_INTERVAL_SECONDS:-}" 86400)" ;;
+esac
+MIN_PERCENT="$(positive_int "${FOZZIE_ATTACHMENT_MIN_FREE_PERCENT:-}" 10)"
+[ "$MIN_PERCENT" -le 100 ] || MIN_PERCENT=100
+MIN_MB="$(positive_int "${FOZZIE_ATTACHMENT_MIN_FREE_MB:-}" 2048)"
+ITERATIONS="${FOZZIE_REGISTRY_SUPERVISOR_ITERATIONS:-}"
+
+CONFIG="$RUN/config.yml"
+CERTS="$RUN/rootcerts.pem"
+CHILD=""
+WAITING_LOGGED=false
+LOW=false
+
+mkdir -p "$RUN" || exit 1
+
+start_child() {
+  registry serve "$CONFIG" &
+  CHILD=$!
+  log "registry started (pid $CHILD)"
+}
+
+stop_child() {
+  if [ -n "$CHILD" ]; then
+    kill -TERM "$CHILD" 2>/dev/null
+    wait "$CHILD" 2>/dev/null
+    CHILD=""
+  fi
+}
+
+restart_child() {
+  stop_child
+  start_child
+}
+
+on_signal() {
+  log "stopping"
+  stop_child
+  exit 0
+}
+trap on_signal TERM INT
+
+# Fetches the certificate bundle. Returns 0 when it changed (or arrived
+# for the first time) and was moved into place; 1 otherwise, keeping the
+# current one.
+fetch_certs() {
+  rm -f "$CERTS.tmp"
+  if ! wget -q -T 10 -O "$CERTS.tmp" "$CERTS_URL" 2>/dev/null     || ! [ -s "$CERTS.tmp" ]     || ! grep -q 'BEGIN CERTIFICATE' "$CERTS.tmp"; then
+    rm -f "$CERTS.tmp"
+    return 1
+  fi
+  if [ -f "$CERTS" ] && cmp -s "$CERTS.tmp" "$CERTS"; then
+    rm -f "$CERTS.tmp"
+    return 1
+  fi
+  mv -f "$CERTS.tmp" "$CERTS" || return 1
+  return 0
+}
+
+# Sets LOW from df: true when available space is under
+# max(total * MIN_PERCENT / 100, MIN_MB MiB). A df failure leaves LOW as
+# it was.
+check_disk() {
+  out="$(df -Pk "$DATA" 2>/dev/null | awk 'NR==2 {print $2, $4}')" || return 0
+  total="${out% *}"
+  avail="${out#* }"
+  case "$total" in "" | *[!0-9]*) return 0 ;; esac
+  case "$avail" in "" | *[!0-9]*) return 0 ;; esac
+  need=$((total * MIN_PERCENT / 100))
+  floor=$((MIN_MB * 1024))
+  [ "$need" -ge "$floor" ] || need="$floor"
+  if [ "$avail" -lt "$need" ]; then LOW=true; else LOW=false; fi
+}
+
+# Regenerates the active config from the source. Returns 0 when it
+# changed.
+write_config() {
+  if [ "$LOW" = true ]; then
+    sed 's/enabled: false/enabled: true/' "$SOURCE" > "$CONFIG.tmp" || return 1
+  else
+    cat "$SOURCE" > "$CONFIG.tmp" || return 1
+  fi
+  if [ -f "$CONFIG" ] && cmp -s "$CONFIG.tmp" "$CONFIG"; then
+    rm -f "$CONFIG.tmp"
+    return 1
+  fi
+  mv -f "$CONFIG.tmp" "$CONFIG" || return 1
+  return 0
+}
+
+garbage_collect() {
+  log "garbage collect: stopping the registry briefly"
+  stop_child
+  registry garbage-collect "$CONFIG"
+  log "garbage collect exited with status $?"
+  start_child
+}
+
+last_gc="$(date +%s)"
+n=0
+while :; do
+  certs_changed=false
+  if fetch_certs; then
+    certs_changed=true
+  fi
+  if ! [ -s "$CERTS" ]; then
+    if [ "$WAITING_LOGGED" = false ]; then
+      log "release registry disabled or unreachable -- enable the release registry in Fozria first (setReleaseRegistrySettings)"
+      WAITING_LOGGED=true
+    fi
+  else
+    had_config=false
+    [ ! -f "$CONFIG" ] || had_config=true
+    check_disk
+    config_changed=false
+    if write_config; then
+      config_changed=true
+      if [ "$LOW" = true ]; then
+        log "low on disk: read-only (pulls work, pushes refused)"
+      elif [ "$had_config" = true ]; then
+        log "disk space recovered: read-write"
+      fi
+    fi
+    if [ -z "$CHILD" ]; then
+      start_child
+    elif ! kill -0 "$CHILD" 2>/dev/null; then
+      log "registry (pid $CHILD) exited unexpectedly"
+      exit 1
+    elif [ "$certs_changed" = true ] || [ "$config_changed" = true ]; then
+      log "restarting the registry for a new certificate bundle or config"
+      restart_child
+    fi
+    if [ "$GC_INTERVAL" -gt 0 ]; then
+      now="$(date +%s)"
+      if [ $((now - last_gc)) -ge "$GC_INTERVAL" ]; then
+        garbage_collect
+        last_gc="$now"
+      fi
+    fi
+  fi
+  n=$((n + 1))
+  if [ -n "$ITERATIONS" ] && [ "$n" -ge "$ITERATIONS" ]; then
+    stop_child
+    exit 0
+  fi
+  sleep "$POLL" &
+  wait $!
+done
+SUPERVISOR
 }
 
 # Echoes "<bind> <host>": the address the dashboard's port binds to and
@@ -856,6 +1225,20 @@ NOTICE: this serves Fozzie on the internet, over HTTPS.
 NOTICE
 }
 
+# Prints the notice shown before --registry-domain turns on (or changes)
+# the release registry (ADR-0325). install.sh prints it; tests check it.
+#   install_registry_notice REGISTRY_DOMAIN
+install_registry_notice() {
+  printf '%s\n' \
+    "NOTICE: this also serves a release registry at https://$1." \
+    "  - It's on the same ports 80 and 443, through Caddy, with its own" \
+    "    Let's Encrypt certificate. The registry itself publishes no port." \
+    "  - Pulls and pushes need a Fozria API token. Nothing is served until" \
+    "    an admin enables the release registry in Fozria." \
+    "  - $1's DNS A record must point at this machine." \
+    "  - Re-run the installer with --no-registry to remove it."
+}
+
 # Classifies a --domain's DNS: RESOLVED is the IPv4 addresses it resolves
 # to (whitespace-separated, "" for none) and PUBLIC_IP is this machine's
 # public IPv4 address ("" when it couldn't be found). Echoes one of:
@@ -885,10 +1268,19 @@ install_domain_resolution_state() {
 }
 
 # The image-ref regex for one service (core-api, dashboard, updater, agent
-# or orchestrator):
-# the same pin-by-digest shape release.ts requires.
+# or orchestrator): the same pin-by-digest shape release.ts requires, on
+# ghcr.io (ghcr.io/functionberry/fozzie-dist-<service>) or on the Fozria
+# registry (registry.functionberry.com/fozria-dist-<service>, ADR-0329),
+# since an install that pulled from the registry keeps those refs in .env.
 install_image_regex() {
-  printf '^ghcr\\.io/functionberry/fozzie-dist-%s@sha256:[0123456789abcdef]{64}$\n' "$1"
+  printf '^(ghcr\\.io/functionberry/fozzie-dist-%s|registry\\.functionberry\\.com/fozria-dist-%s)@sha256:[0123456789abcdef]{64}$\n' "$1" "$1"
+}
+
+# The mirror-ref regex for one service (ADR-0329): its copy on the Fozria
+# registry only, the same shape release.ts requires of a manifest mirror.
+# A latest.env *_MIRROR line is always the registry copy, never ghcr.io.
+install_mirror_regex() {
+  printf '^registry\\.functionberry\\.com/fozria-dist-%s@sha256:[0123456789abcdef]{64}$\n' "$1"
 }
 
 # Validates latest.env -- given as a file path, or as its text -- without
@@ -901,19 +1293,31 @@ install_image_regex() {
 # allows a release without one). FOZZIE_AGENT_IMAGE and
 # FOZZIE_ORCHESTRATOR_IMAGE are optional: releases before they were
 # published, and edge releases, don't have them.
+# Each image may also have a FOZZIE_<SERVICE>_MIRROR (ADR-0329): its copy
+# at registry.functionberry.com/fozria-dist-<service>, which needs that
+# service's image line and must have the same digest.
 # On success sets LATEST_VERSION, LATEST_CORE_API_IMAGE,
 # LATEST_DASHBOARD_IMAGE, LATEST_UPDATER_IMAGE, LATEST_AGENT_IMAGE and
-# LATEST_ORCHESTRATOR_IMAGE (the last two empty when absent); on failure
-# leaves them all empty, echoes why to stderr and returns 1.
+# LATEST_ORCHESTRATOR_IMAGE (the last two empty when absent), plus
+# LATEST_CORE_API_MIRROR, LATEST_DASHBOARD_MIRROR, LATEST_UPDATER_MIRROR,
+# LATEST_AGENT_MIRROR and LATEST_ORCHESTRATOR_MIRROR (each empty when
+# absent); on failure leaves them all empty, echoes why to stderr and
+# returns 1.
 install_parse_latest_env() {
-  local input="$1" text line key value re seen=" " n=0
+  local input="$1" text line key value re seen=" " n=0 mkey mirror primary
   local version="" core="" dashboard="" updater="" agent="" orchestrator=""
+  local core_m="" dashboard_m="" updater_m="" agent_m="" orchestrator_m=""
   LATEST_VERSION=""
   LATEST_CORE_API_IMAGE=""
   LATEST_DASHBOARD_IMAGE=""
   LATEST_UPDATER_IMAGE=""
   LATEST_AGENT_IMAGE=""
   LATEST_ORCHESTRATOR_IMAGE=""
+  LATEST_CORE_API_MIRROR=""
+  LATEST_DASHBOARD_MIRROR=""
+  LATEST_UPDATER_MIRROR=""
+  LATEST_AGENT_MIRROR=""
+  LATEST_ORCHESTRATOR_MIRROR=""
   if [ -f "$input" ]; then
     text="$(cat "$input")" || return 1
   else
@@ -960,6 +1364,26 @@ install_parse_latest_env() {
         re="$(install_image_regex orchestrator)"
         orchestrator="$value"
         ;;
+      FOZZIE_CORE_API_MIRROR)
+        re="$(install_mirror_regex core-api)"
+        core_m="$value"
+        ;;
+      FOZZIE_DASHBOARD_MIRROR)
+        re="$(install_mirror_regex dashboard)"
+        dashboard_m="$value"
+        ;;
+      FOZZIE_UPDATER_MIRROR)
+        re="$(install_mirror_regex updater)"
+        updater_m="$value"
+        ;;
+      FOZZIE_AGENT_MIRROR)
+        re="$(install_mirror_regex agent)"
+        agent_m="$value"
+        ;;
+      FOZZIE_ORCHESTRATOR_MIRROR)
+        re="$(install_mirror_regex orchestrator)"
+        orchestrator_m="$value"
+        ;;
       *)
         printf 'latest.env has an unknown key %s\n' "$key" >&2
         return 1
@@ -979,12 +1403,39 @@ install_parse_latest_env() {
         ;;
     esac
   done
+  # Each mirror needs its image, at the same digest.
+  for mkey in CORE_API DASHBOARD UPDATER AGENT ORCHESTRATOR; do
+    case "$mkey" in
+      CORE_API) mirror="$core_m" primary="$core" ;;
+      DASHBOARD) mirror="$dashboard_m" primary="$dashboard" ;;
+      UPDATER) mirror="$updater_m" primary="$updater" ;;
+      AGENT) mirror="$agent_m" primary="$agent" ;;
+      ORCHESTRATOR) mirror="$orchestrator_m" primary="$orchestrator" ;;
+    esac
+    [ -n "$mirror" ] || continue
+    if [ -z "$primary" ]; then
+      printf 'latest.env has FOZZIE_%s_MIRROR but no FOZZIE_%s_IMAGE\n' "$mkey" "$mkey" >&2
+      return 1
+    fi
+    if [ "${mirror##*@}" != "${primary##*@}" ]; then
+      printf "latest.env FOZZIE_%s_MIRROR's digest isn't FOZZIE_%s_IMAGE's\n" "$mkey" "$mkey" >&2
+      return 1
+    fi
+  done
   LATEST_VERSION="$version"
   LATEST_CORE_API_IMAGE="$core"
   LATEST_DASHBOARD_IMAGE="$dashboard"
   LATEST_UPDATER_IMAGE="$updater"
   LATEST_AGENT_IMAGE="$agent"
   LATEST_ORCHESTRATOR_IMAGE="$orchestrator"
+  # shellcheck disable=SC2034
+  {
+    LATEST_CORE_API_MIRROR="$core_m"
+    LATEST_DASHBOARD_MIRROR="$dashboard_m"
+    LATEST_UPDATER_MIRROR="$updater_m"
+    LATEST_AGENT_MIRROR="$agent_m"
+    LATEST_ORCHESTRATOR_MIRROR="$orchestrator_m"
+  }
   return 0
 }
 
@@ -1049,6 +1500,10 @@ install_managed_value() {
     FOZZIE_DOMAIN) printf '%s\n' "$m_FOZZIE_DOMAIN" ;;
     FOZZIE_TRUSTED_PROXY_HOPS) printf '%s\n' "$m_FOZZIE_TRUSTED_PROXY_HOPS" ;;
     FOZZIE_HSTS) printf '%s\n' "$m_FOZZIE_HSTS" ;;
+    FOZZIE_REGISTRY_DOMAIN) printf '%s\n' "$m_FOZZIE_REGISTRY_DOMAIN" ;;
+    FOZZIE_REGISTRY_HTTP_SECRET) printf '%s\n' "$m_FOZZIE_REGISTRY_HTTP_SECRET" ;;
+    FOZRIA_REGISTRY_USERNAME) printf '%s\n' "$m_FOZRIA_REGISTRY_USERNAME" ;;
+    FOZRIA_REGISTRY_TOKEN) printf '%s\n' "$m_FOZRIA_REGISTRY_TOKEN" ;;
   esac
 }
 
@@ -1064,15 +1519,20 @@ install_managed_value() {
 #   FOZZIE_VERSION, FOZZIE_*_IMAGE: always LATEST_* (install_parse_latest_env),
 #     so a release without the agent or orchestrator image drops its line;
 #   GHCR_USERNAME, GHCR_TOKEN: the newly entered value, existing;
+#   FOZRIA_REGISTRY_USERNAME, FOZRIA_REGISTRY_TOKEN (ADR-0329): the newly
+#     entered value, existing -- so an install without them keeps its .env
+#     unchanged;
 #   COMPOSE_PROJECT, FOZZIE_INSTALL_DIR (for the updater), and
 #     FOZZIE_INSTANCE_NAME: always this run's PROJECT, absolute DIR and
 #     NAME, never kept from the existing file;
 #   FOZZIE_AGENTS_ENABLED: the remembered choice, install_agents_wanted
 #     EXISTING FLAG_AGENTS (true or false);
 #   COMPOSE_PROFILES: the comma-joined list of "agents" (when that's true
-#     and AGENTS_AVAILABLE is true) and "domain" (when FOZZIE_DOMAIN is
-#     set) -- "agents", "domain" or "agents,domain" -- and left out when
-#     it's empty, so both profiles are off. A run that can't have agents
+#     and AGENTS_AVAILABLE is true), "domain" (when FOZZIE_DOMAIN is set)
+#     and "registry" after it (when FOZZIE_REGISTRY_DOMAIN is set) --
+#     "agents", "domain", "agents,domain", "domain,registry" or
+#     "agents,domain,registry" -- and left out when it's empty, so every
+#     profile is off. A run that can't have agents
 #     (AGENTS_AVAILABLE false: the release has no agent images, or
 #     pulling them failed) doesn't write FOZZIE_AGENTS_ENABLED=false, so
 #     the next release that can turns them back on.
@@ -1088,6 +1548,14 @@ install_managed_value() {
 #     (install_hsts_wanted EXISTING FLAG_HSTS FOZZIE_DOMAIN); written only
 #     with a domain and only when it isn't host, the default, so a domain
 #     install's .env is unchanged without --hsts and no domain drops it;
+#   FOZZIE_REGISTRY_DOMAIN (ADR-0325): install_registry_domain_wanted
+#     EXISTING FLAG_REGISTRY_DOMAIN NO_REGISTRY FOZZIE_DOMAIN -- none
+#     without a domain, else the flag, else existing unless --no-registry;
+#     written only when there is one;
+#   FOZZIE_REGISTRY_HTTP_SECRET: existing (never rotated, even across
+#     --no-registry and back), else the candidate only when a registry
+#     domain is wanted, so an install without a registry keeps its .env
+#     unchanged;
 #   FOZZIE_BIND_ADDRESS, FOZZIE_PUBLIC_HOST (ADR-0277): with a domain,
 #     127.0.0.1 and the domain; otherwise flag, existing (unless the
 #     existing ones came from a domain this run drops), then 127.0.0.1
@@ -1106,7 +1574,9 @@ install_managed_value() {
 #     NEW_GHCR_USERNAME NEW_GHCR_TOKEN CANDIDATE_PASSWORD CANDIDATE_KEY \
 #     CANDIDATE_UPDATER_TOKEN PROJECT DIR CANDIDATE_HEARTBEAT_SECRET NAME \
 #     FLAG_AGENTS AGENTS_AVAILABLE FLAG_BIND_ADDRESS FLAG_PUBLIC_HOST \
-#     LOCALHOST_ONLY FLAG_DOMAIN NO_DOMAIN FLAG_HSTS
+#     LOCALHOST_ONLY FLAG_DOMAIN NO_DOMAIN FLAG_HSTS \
+#     FLAG_REGISTRY_DOMAIN NO_REGISTRY CANDIDATE_REGISTRY_SECRET \
+#     NEW_FOZRIA_USERNAME NEW_FOZRIA_TOKEN
 install_merge_env() {
   local existing="$1" import="$2" flag_core="$3" flag_dash="$4"
   local new_user="$5" new_token="$6" cand_password="$7" cand_key="$8" cand_updater="$9"
@@ -1115,6 +1585,8 @@ install_merge_env() {
   local flag_agents="${14:-}" agents_available="${15:-false}"
   local flag_bind="${16:-}" flag_host="${17:-}" localhost_only="${18:-false}"
   local flag_domain="${19:-}" no_domain="${20:-false}" flag_hsts="${21:-}"
+  local flag_registry="${22:-}" no_registry="${23:-false}" cand_registry_secret="${24:-}"
+  local new_fozria_user="${25:-}" new_fozria_token="${26:-}"
   local key value line emitted=" " other_net=false
   local m_FOZZIE_VERSION="$LATEST_VERSION"
   local m_FOZZIE_CORE_API_IMAGE="$LATEST_CORE_API_IMAGE"
@@ -1127,6 +1599,8 @@ install_merge_env() {
   local m_FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET m_FOZZIE_AGENTS_ENABLED m_COMPOSE_PROFILES=""
   local m_FOZZIE_BIND_ADDRESS m_FOZZIE_PUBLIC_HOST m_FOZZIE_DASHBOARD_URL m_FOZZIE_CORE_PUBLIC_URL
   local m_FOZZIE_DOMAIN m_FOZZIE_TRUSTED_PROXY_HOPS="" m_FOZZIE_HSTS
+  local m_FOZZIE_REGISTRY_DOMAIN m_FOZZIE_REGISTRY_HTTP_SECRET
+  local m_FOZRIA_REGISTRY_USERNAME m_FOZRIA_REGISTRY_TOKEN
 
   m_POSTGRES_PASSWORD="$(install_env_get "$import" POSTGRES_PASSWORD)"
   [ -n "$m_POSTGRES_PASSWORD" ] || m_POSTGRES_PASSWORD="$(install_env_get "$existing" POSTGRES_PASSWORD)"
@@ -1155,6 +1629,14 @@ install_merge_env() {
     m_FOZZIE_TRUSTED_PROXY_HOPS=2
     m_COMPOSE_PROFILES="${m_COMPOSE_PROFILES:+$m_COMPOSE_PROFILES,}domain"
   fi
+  m_FOZZIE_REGISTRY_DOMAIN="$(install_registry_domain_wanted "$existing" "$flag_registry" "$no_registry" "$m_FOZZIE_DOMAIN")"
+  if [ -n "$m_FOZZIE_REGISTRY_DOMAIN" ]; then
+    m_COMPOSE_PROFILES="$m_COMPOSE_PROFILES,registry"
+  fi
+  m_FOZZIE_REGISTRY_HTTP_SECRET="$(install_env_get "$existing" FOZZIE_REGISTRY_HTTP_SECRET)"
+  if [ -z "$m_FOZZIE_REGISTRY_HTTP_SECRET" ] && [ -n "$m_FOZZIE_REGISTRY_DOMAIN" ]; then
+    m_FOZZIE_REGISTRY_HTTP_SECRET="$cand_registry_secret"
+  fi
   m_FOZZIE_HSTS="$(install_hsts_wanted "$existing" "$flag_hsts" "$m_FOZZIE_DOMAIN")"
   [ "$m_FOZZIE_HSTS" != host ] || m_FOZZIE_HSTS=""
 
@@ -1175,6 +1657,11 @@ install_merge_env() {
   [ -n "$m_GHCR_USERNAME" ] || m_GHCR_USERNAME="$(install_env_get "$existing" GHCR_USERNAME)"
   m_GHCR_TOKEN="$new_token"
   [ -n "$m_GHCR_TOKEN" ] || m_GHCR_TOKEN="$(install_env_get "$existing" GHCR_TOKEN)"
+
+  m_FOZRIA_REGISTRY_USERNAME="$new_fozria_user"
+  [ -n "$m_FOZRIA_REGISTRY_USERNAME" ] || m_FOZRIA_REGISTRY_USERNAME="$(install_env_get "$existing" FOZRIA_REGISTRY_USERNAME)"
+  m_FOZRIA_REGISTRY_TOKEN="$new_fozria_token"
+  [ -n "$m_FOZRIA_REGISTRY_TOKEN" ] || m_FOZRIA_REGISTRY_TOKEN="$(install_env_get "$existing" FOZRIA_REGISTRY_TOKEN)"
 
   for key in FOZZIE_VERSION FOZZIE_CORE_API_IMAGE FOZZIE_DASHBOARD_IMAGE FOZZIE_UPDATER_IMAGE POSTGRES_PASSWORD FOZZIE_ENCRYPTION_KEY FOZZIE_UPDATER_TOKEN FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET COMPOSE_PROJECT FOZZIE_INSTALL_DIR; do
     value="$(install_managed_value "$key")"
@@ -1316,6 +1803,110 @@ install_docker_error_message() {
       printf '%s\n' "$output"
       ;;
   esac
+}
+
+# Classifies `docker login` / `docker pull` output from the Fozria
+# registry, registry.functionberry.com (ADR-0322, ADR-0329), given what
+# was being done -- "login", "pull" (not logged in) or "pull-auth" (after
+# a successful login). Echoes one of: daemon, rate-limited,
+# bad-credentials, login-needed, no-access, missing-image, network,
+# unknown. Unlike ghcr.io there's no token scope to get wrong: a valid
+# token whose owner isn't in Release testers logs in fine and then gets
+# denied (or insufficient_scope) on the pull.
+install_registry_error_category() {
+  local context="$1" out
+  # Digests go first: their hex can contain "401", "403" or "429".
+  out="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]' | sed -E 's/sha256:[0-9a-f]+//g')"
+  case "$out" in
+    *"cannot connect to the docker daemon"* | *"is the docker daemon running"*)
+      echo daemon
+      return 0
+      ;;
+    *"429"* | *"toomanyrequests"* | *"too many requests"* | *"too many token requests"*)
+      echo rate-limited
+      return 0
+      ;;
+  esac
+  if [ "$context" = login ]; then
+    case "$out" in
+      *"unauthorized"* | *"401"* | *"authentication required"* | *"incorrect username or password"*)
+        echo bad-credentials
+        return 0
+        ;;
+    esac
+  else
+    # Checked before "not found" / "does not exist": docker's denied
+    # message says "repository does not exist or may require 'docker
+    # login'".
+    case "$out" in
+      *"unauthorized"* | *"denied"* | *"401"* | *"403"* | *"forbidden"* | *"insufficient_scope"* | *"authentication required"* | *"no basic auth credentials"*)
+        if [ "$context" = pull ]; then
+          echo login-needed
+        else
+          echo no-access
+        fi
+        return 0
+        ;;
+    esac
+  fi
+  case "$out" in
+    *"manifest unknown"* | *"not found"* | *"does not exist"*)
+      echo missing-image
+      return 0
+      ;;
+    *"tls"* | *"timeout"* | *"timed out"* | *"no such host"* | *"network is unreachable"* | *"connection refused"* | *"dial tcp"*)
+      echo network
+      return 0
+      ;;
+  esac
+  echo unknown
+}
+
+# A friendly message for the Fozria registry's docker output (see
+# install_registry_error_category for context), naming the account's
+# email where it helps. Anything it doesn't recognise comes back as the
+# raw output.
+install_registry_error_message() {
+  local context="$1" output="$2" email="${3:-}"
+  case "$(install_registry_error_category "$context" "$output")" in
+    daemon)
+      echo "Docker isn't running. Start Docker Desktop (or the Docker service on Linux), wait for it to finish starting, then run this again."
+      ;;
+    rate-limited)
+      echo "$INSTALL_FOZRIA_APP has had too many login attempts from here. Wait a few minutes, then run this again."
+      ;;
+    bad-credentials)
+      echo "$INSTALL_FOZRIA_APP didn't accept that email and API token: the token has expired, been revoked, or isn't an API token (your account password won't work). Make a new one on $INSTALL_FOZRIA_APP under $INSTALL_FOZRIA_TOKENS_WHERE."
+      ;;
+    login-needed)
+      echo "Logging in to $INSTALL_FOZRIA_REGISTRY with your Fozria email and API token is needed to download Fozzie."
+      ;;
+    no-access)
+      echo "Your Fozria account isn't in Release testers on $INSTALL_FOZRIA_APP; ask Mark to add ${email:-your email}, then run this again."
+      ;;
+    missing-image)
+      echo "This release's image is missing from $INSTALL_FOZRIA_REGISTRY -- tell Mark."
+      ;;
+    network)
+      echo "Couldn't reach $INSTALL_FOZRIA_REGISTRY -- this looks like a network problem. Check your internet connection (and any VPN or proxy), then run this again."
+      ;;
+    *)
+      printf '%s\n' "$output"
+      ;;
+  esac
+}
+
+# Switches every LATEST_<SERVICE>_IMAGE that has a mirror to that mirror
+# (ADR-0329), once the installer has pulled from the Fozria registry, so
+# .env and `docker compose pull` use the refs it can actually reach. An
+# empty mirror leaves its image as it is.
+install_use_mirrors() {
+  [ -z "$LATEST_CORE_API_MIRROR" ] || LATEST_CORE_API_IMAGE="$LATEST_CORE_API_MIRROR"
+  [ -z "$LATEST_DASHBOARD_MIRROR" ] || LATEST_DASHBOARD_IMAGE="$LATEST_DASHBOARD_MIRROR"
+  [ -z "$LATEST_UPDATER_MIRROR" ] || LATEST_UPDATER_IMAGE="$LATEST_UPDATER_MIRROR"
+  [ -z "$LATEST_AGENT_MIRROR" ] || LATEST_AGENT_IMAGE="$LATEST_AGENT_MIRROR"
+  [ -z "$LATEST_ORCHESTRATOR_MIRROR" ] || LATEST_ORCHESTRATOR_IMAGE="$LATEST_ORCHESTRATOR_MIRROR"
+  return 0
 }
 
 # install_lower TEXT: TEXT in lowercase (bash 3.2 has no ${var,,}).
@@ -1460,11 +2051,17 @@ no_tty_for_login() {
     "  curl -fsSL $FOZZIE_RELEASES_URL/install.sh | GHCR_USERNAME=you GHCR_TOKEN=ghp_... bash"
 }
 
-# docker_login USER TOKEN: logs in to ghcr.io with the token on stdin,
+no_tty_for_fozria_login() {
+  die "Logging in to $INSTALL_FOZRIA_REGISTRY needs your Fozria account's email and an API token, and there's no terminal to ask on." \
+    "Make a token on $INSTALL_FOZRIA_APP under $INSTALL_FOZRIA_TOKENS_WHERE, then set FOZRIA_REGISTRY_USERNAME and FOZRIA_REGISTRY_TOKEN:" \
+    "  curl -fsSL $FOZZIE_RELEASES_URL/install.sh | FOZRIA_REGISTRY_USERNAME=you@example.com FOZRIA_REGISTRY_TOKEN=<64-hex token> bash"
+}
+
+# docker_login HOST USER TOKEN: logs in to HOST with the token on stdin,
 # never on the command line. Leaves docker's output in LOGIN_OUTPUT.
 docker_login() {
   LOGIN_OUTPUT=""
-  if LOGIN_OUTPUT="$(printf '%s' "$2" | docker login ghcr.io -u "$1" --password-stdin 2>&1)"; then
+  if LOGIN_OUTPUT="$(printf '%s' "$3" | docker login "$1" -u "$2" --password-stdin 2>&1)"; then
     return 0
   fi
   return 1
@@ -1499,7 +2096,7 @@ login_interactive() {
       echo "That doesn't look like a GitHub token (letters, digits and _ only)."
       continue
     fi
-    if docker_login "$user" "$token"; then
+    if docker_login ghcr.io "$user" "$token"; then
       NEW_GHCR_USERNAME="$user"
       NEW_GHCR_TOKEN="$token"
       echo "Logged in to ghcr.io as $user."
@@ -1513,11 +2110,150 @@ login_interactive() {
   die "Giving up after three tries. Check the username and token, then run this again."
 }
 
-# pull_core: pulls the release's core-api image, which also proves
-# the login works. Leaves docker's output in PULL_OUTPUT.
+# Walks through getting a Fozria API token and logging in to the Fozria
+# registry with it (ADR-0329), up to three tries. Sets
+# NEW_FOZRIA_USERNAME / NEW_FOZRIA_TOKEN.
+EXPLAINED_FOZRIA=false
+login_fozria_interactive() {
+  local user token tries=0
+  have_tty || no_tty_for_fozria_login
+  if [ "$EXPLAINED_FOZRIA" != true ]; then
+    EXPLAINED_FOZRIA=true
+    echo
+    echo "Fozzie's images are on $INSTALL_FOZRIA_REGISTRY, which needs your Fozria"
+    echo "account's email and an API token to download them:"
+    echo "  1. Accept your invite on https://$INSTALL_FOZRIA_APP and create your account."
+    echo "  2. Make an API token there, under $INSTALL_FOZRIA_TOKENS_WHERE."
+    echo "The token is kept in this instance's .env so in-app updates can pull new"
+    echo "images later."
+    echo
+  fi
+  while [ "$tries" -lt 3 ]; do
+    tries=$((tries + 1))
+    user="$(ask "Fozria email: ")"
+    if ! [[ "$user" =~ $INSTALL_FOZRIA_USERNAME_REGEX ]]; then
+      echo "That doesn't look like an email address."
+      continue
+    fi
+    token="$(ask_secret "API token (input hidden): ")"
+    if ! [[ "$token" =~ $INSTALL_FOZRIA_TOKEN_REGEX ]]; then
+      echo "That doesn't look like a Fozria API token: it should be 64 characters, 0-9 and a-f."
+      continue
+    fi
+    if docker_login "$INSTALL_FOZRIA_REGISTRY" "$user" "$token"; then
+      NEW_FOZRIA_USERNAME="$user"
+      NEW_FOZRIA_TOKEN="$token"
+      echo "Logged in to $INSTALL_FOZRIA_REGISTRY as $user."
+      return 0
+    fi
+    case "$(install_registry_error_category login "$LOGIN_OUTPUT")" in
+      bad-credentials) install_registry_error_message login "$LOGIN_OUTPUT" "$user" ;;
+      *) die "$(install_registry_error_message login "$LOGIN_OUTPUT" "$user")" ;;
+    esac
+  done
+  die "Giving up after three tries. Check the email and API token, then run this again."
+}
+
+# registry_fall_back CONTEXT OUTPUT EMAIL: after a network or
+# missing-image failure on the Fozria registry, returns 0 (so the caller
+# carries on with ghcr.io) when ghcr.io can work -- GitHub credentials in
+# the environment or .env, or a plain pull of the ghcr.io core-api image
+# works without them. Otherwise dies with the registry's message.
+registry_fall_back() {
+  local context="$1" output="$2" email="$3" reason
+  case "$(install_registry_error_category "$context" "$output")" in
+    network) reason="it couldn't be reached" ;;
+    *) reason="this release's image isn't there" ;;
+  esac
+  if [ "$GHCR_CREDS_KNOWN" = true ] ||
+    docker pull "$LATEST_CORE_API_IMAGE" </dev/null >/dev/null 2>&1; then
+    echo "Couldn't download from $INSTALL_FOZRIA_REGISTRY ($reason); trying ghcr.io instead."
+    return 0
+  fi
+  die "$(install_registry_error_message "$context" "$output" "$email")"
+}
+
+# registry_access: logs in to the Fozria registry with the Fozria email
+# and API token from the environment or .env (or, when there are none and
+# a plain pull isn't enough, asks for them), then pulls the core-api
+# mirror. When that worked, sets SOURCE=registry and switches every
+# LATEST_*_IMAGE to its mirror; when it should fall back to ghcr.io (see
+# registry_fall_back), leaves both alone; dies on anything else. Called
+# as a plain statement, never in a condition, so set -e still applies.
+registry_access() {
+  local user="" token="" from="" context=pull category
+  if [ -n "${FOZRIA_REGISTRY_USERNAME:-}" ] || [ -n "${FOZRIA_REGISTRY_TOKEN:-}" ]; then
+    [[ "${FOZRIA_REGISTRY_USERNAME:-}" =~ $INSTALL_FOZRIA_USERNAME_REGEX ]] ||
+      die "FOZRIA_REGISTRY_USERNAME doesn't look like an email address."
+    [[ "${FOZRIA_REGISTRY_TOKEN:-}" =~ $INSTALL_FOZRIA_TOKEN_REGEX ]] ||
+      die "FOZRIA_REGISTRY_TOKEN doesn't look like a Fozria API token (64 characters, 0-9 and a-f)."
+    from=given
+    user="$FOZRIA_REGISTRY_USERNAME"
+    token="$FOZRIA_REGISTRY_TOKEN"
+  elif [ -n "$SAVED_FOZRIA_USERNAME" ] && [ -n "$SAVED_FOZRIA_TOKEN" ]; then
+    from=saved
+    user="$SAVED_FOZRIA_USERNAME"
+    token="$SAVED_FOZRIA_TOKEN"
+  fi
+
+  if [ -n "$from" ]; then
+    [ "$from" != given ] || log "Logging in to $INSTALL_FOZRIA_REGISTRY as $user"
+    if docker_login "$INSTALL_FOZRIA_REGISTRY" "$user" "$token"; then
+      if [ "$from" = given ]; then
+        NEW_FOZRIA_USERNAME="$user"
+        NEW_FOZRIA_TOKEN="$token"
+      fi
+    else
+      category="$(install_registry_error_category login "$LOGIN_OUTPUT")"
+      case "$category" in
+        bad-credentials)
+          [ "$from" != given ] || die "$(install_registry_error_message login "$LOGIN_OUTPUT" "$user")"
+          echo "The Fozria API token saved in $ENV_FILE didn't work:"
+          install_registry_error_message login "$LOGIN_OUTPUT" "$user"
+          login_fozria_interactive
+          user="$NEW_FOZRIA_USERNAME"
+          ;;
+        network | missing-image)
+          registry_fall_back login "$LOGIN_OUTPUT" "$user"
+          return 0
+          ;;
+        *)
+          die "$(install_registry_error_message login "$LOGIN_OUTPUT" "$user")"
+          ;;
+      esac
+    fi
+    context=pull-auth
+  fi
+
+  log "Downloading Fozzie $LATEST_VERSION from $INSTALL_FOZRIA_REGISTRY (this can take a few minutes the first time)"
+  until pull_core "$LATEST_CORE_API_MIRROR"; do
+    category="$(install_registry_error_category "$context" "$PULL_OUTPUT")"
+    case "$category" in
+      login-needed)
+        login_fozria_interactive
+        user="$NEW_FOZRIA_USERNAME"
+        context=pull-auth
+        ;;
+      network | missing-image)
+        registry_fall_back "$context" "$PULL_OUTPUT" "$user"
+        return 0
+        ;;
+      *)
+        die "$(install_registry_error_message "$context" "$PULL_OUTPUT" "$user")"
+        ;;
+    esac
+  done
+  SOURCE=registry
+  install_use_mirrors
+}
+
+# pull_core [IMAGE]: pulls the release's core-api image (or IMAGE, its
+# mirror), which also proves the login works. Leaves docker's output in
+# PULL_OUTPUT.
 pull_core() {
-  echo "Pulling $LATEST_CORE_API_IMAGE"
-  if docker pull "$LATEST_CORE_API_IMAGE" </dev/null >"$WORK/pull.log" 2>&1; then
+  local image="${1:-$LATEST_CORE_API_IMAGE}"
+  echo "Pulling $image"
+  if docker pull "$image" </dev/null >"$WORK/pull.log" 2>&1; then
     PULL_OUTPUT=""
     return 0
   fi
@@ -1782,7 +2518,7 @@ uninstall() {
       "Remove Fozzie and keep the data (and keep $ENV_FILE -- re-installing needs it):" \
       "  $dc_cmd down" \
       "Or delete everything, permanently (data, every backup, then the folder):" \
-      "  $dc_cmd down -v && rm -f \"$DIR/docker-compose.yml\" \"$ENV_FILE\" \"$DIR/Caddyfile\" && rmdir \"$DIR\""
+      "  $dc_cmd down -v && rm -f \"$DIR/docker-compose.yml\" \"$ENV_FILE\" \"$DIR/Caddyfile\" \"$DIR/registry-config.yml\" \"$DIR/registry-supervisor.sh\" && rmdir \"$DIR\""
   fi
   echo
   echo "Uninstalling Fozzie instance \"$NAME\" ($PROJECT):"
@@ -1803,11 +2539,13 @@ uninstall() {
     2)
       confirm_delete
       delete_instance_data
-      rm -f "$DIR/docker-compose.yml" "$ENV_FILE" "$DIR/Caddyfile"
+      rm -f "$DIR/docker-compose.yml" "$ENV_FILE" "$DIR/Caddyfile" "$DIR/registry-config.yml" "$DIR/registry-supervisor.sh"
       rmdir "$DIR" 2>/dev/null || true
       echo
-      echo "To finish: log Docker out of GitHub's registry (docker logout ghcr.io), and"
-      echo "revoke the token at https://github.com/settings/tokens."
+      echo "To finish: log Docker out of the Fozria registry (docker logout $INSTALL_FOZRIA_REGISTRY),"
+      echo "and revoke the API token on $INSTALL_FOZRIA_APP ($INSTALL_FOZRIA_TOKENS_WHERE)."
+      echo "If you used a GitHub token: log Docker out of GitHub's registry (docker logout ghcr.io),"
+      echo "and revoke the token at https://github.com/settings/tokens."
       ;;
     *) die "Nothing changed." ;;
   esac
@@ -1857,6 +2595,19 @@ main() {
     [ -z "$(install_domain_wanted "$ENV_FILE" "$INSTALL_DOMAIN" "$INSTALL_NO_DOMAIN" false)" ]; then
     die "--hsts only applies with --domain: this instance isn't served at a domain. Nothing changed."
   fi
+  # The release registry's token realm is on the app's domain (ADR-0325):
+  # refuse --registry-domain before anything changes when this run ends
+  # up with no domain, or with the registry on the app's own one.
+  if [ -n "$INSTALL_REGISTRY_DOMAIN" ] && [ "$INSTALL_UNINSTALL" != true ]; then
+    local app_domain
+    app_domain="$(install_domain_wanted "$ENV_FILE" "$INSTALL_DOMAIN" "$INSTALL_NO_DOMAIN" false)"
+    if [ -z "$app_domain" ]; then
+      die "--registry-domain needs --domain: this instance isn't served at a domain. Nothing changed."
+    fi
+    if [ "$INSTALL_REGISTRY_DOMAIN" = "$app_domain" ]; then
+      die "--registry-domain $INSTALL_REGISTRY_DOMAIN is the app's own domain: the registry domain must differ from the app's domain. Nothing changed."
+    fi
+  fi
   if [ "$INSTALL_UNINSTALL" != true ] && install_needs_ports "$NAME" "$HAVE_EXISTING_PORTS" "$HAVE_IMPORT_PORTS" "$INSTALL_CORE_PORT" "$INSTALL_DASHBOARD_PORT"; then
     die "The first install of instance \"$NAME\" needs two free ports, e.g.:" \
       "  curl -fsSL $FOZZIE_RELEASES_URL/install.sh | bash -s -- --name $NAME --core-port 4001 --dashboard-port 5174"
@@ -1903,7 +2654,7 @@ main() {
   command -v openssl >/dev/null 2>&1 || die "openssl isn't installed -- install it, then run this again."
 
   WORK="$(mktemp -d)"
-  trap 'stop_dbcheck; rm -rf "$WORK"; rm -f "$DIR/.env.tmp" "$DIR/docker-compose.yml.tmp" "$DIR/Caddyfile.tmp"' EXIT
+  trap 'stop_dbcheck; rm -rf "$WORK"; rm -f "$DIR/.env.tmp" "$DIR/docker-compose.yml.tmp" "$DIR/Caddyfile.tmp" "$DIR/registry-config.yml.tmp" "$DIR/registry-supervisor.sh.tmp"' EXIT
 
   if [ "$INSTALL_UNINSTALL" = true ]; then
     uninstall
@@ -1951,71 +2702,117 @@ main() {
   fi
   echo "Latest release: $LATEST_VERSION"
 
-  # --- 4. ghcr.io access -----------------------------------------------
+  # --- 4. Registry access ----------------------------------------------
 
+  # The release's images are on ghcr.io and, when latest.env lists
+  # mirrors, also on registry.functionberry.com (ADR-0329). SOURCE is where
+  # this run downloads them from: the registry when it has them and this
+  # install has (or is a new install that can be given) a Fozria API
+  # token; otherwise ghcr.io, as before. An install with only a GitHub
+  # token stays on ghcr.io until the Fozria rename's phase 2 moves it.
   NEW_GHCR_USERNAME=""
   NEW_GHCR_TOKEN=""
+  NEW_FOZRIA_USERNAME=""
+  NEW_FOZRIA_TOKEN=""
+  SOURCE=ghcr
   local logged_in=false existing_user existing_token
   existing_user="$(install_env_get "$ENV_FILE" GHCR_USERNAME)"
   existing_token="$(install_env_get "$ENV_FILE" GHCR_TOKEN)"
+  SAVED_FOZRIA_USERNAME="$(install_env_get "$ENV_FILE" FOZRIA_REGISTRY_USERNAME)"
+  SAVED_FOZRIA_TOKEN="$(install_env_get "$ENV_FILE" FOZRIA_REGISTRY_TOKEN)"
+  GHCR_CREDS_KNOWN=false
+  if [ -n "${GHCR_USERNAME:-}" ] || [ -n "${GHCR_TOKEN:-}" ] ||
+    { [ -n "$existing_user" ] && [ -n "$existing_token" ]; }; then
+    GHCR_CREDS_KNOWN=true
+  fi
 
-  if [ -n "${GHCR_USERNAME:-}" ] || [ -n "${GHCR_TOKEN:-}" ]; then
-    [[ "${GHCR_USERNAME:-}" =~ $INSTALL_GHCR_USERNAME_REGEX ]] ||
-      die "GHCR_USERNAME doesn't look like a GitHub username (letters, digits and - only)."
-    [[ "${GHCR_TOKEN:-}" =~ $INSTALL_GHCR_TOKEN_REGEX ]] ||
-      die "GHCR_TOKEN doesn't look like a GitHub token (letters, digits and _ only)."
-    log "Logging in to ghcr.io as $GHCR_USERNAME"
-    docker_login "$GHCR_USERNAME" "$GHCR_TOKEN" ||
-      die "$(install_docker_error_message login "$LOGIN_OUTPUT" "$GHCR_USERNAME")"
-    NEW_GHCR_USERNAME="$GHCR_USERNAME"
-    NEW_GHCR_TOKEN="$GHCR_TOKEN"
-    logged_in=true
-  elif [ -n "$existing_user" ] && [ -n "$existing_token" ]; then
-    if docker_login "$existing_user" "$existing_token"; then
-      logged_in=true
+  if [ -n "$LATEST_CORE_API_MIRROR" ]; then
+    if [ -z "${FOZRIA_REGISTRY_USERNAME:-}" ] && [ -z "${FOZRIA_REGISTRY_TOKEN:-}" ] &&
+      { [ -z "$SAVED_FOZRIA_USERNAME" ] || [ -z "$SAVED_FOZRIA_TOKEN" ]; } &&
+      [ "$GHCR_CREDS_KNOWN" = true ]; then
+      echo "Note: this release is also on $INSTALL_FOZRIA_REGISTRY; switching to a Fozria account comes with a later update. Carrying on with ghcr.io."
     else
-      echo "The GitHub token saved in $ENV_FILE didn't work:"
-      install_docker_error_message login "$LOGIN_OUTPUT" "$existing_user"
+      registry_access
     fi
   fi
 
-  log "Downloading Fozzie $LATEST_VERSION (this can take a few minutes the first time)"
-  local context=pull category user_for_messages tries=0
-  if [ "$logged_in" = true ]; then
-    context=pull-auth
-  fi
-  until pull_core; do
-    user_for_messages="${NEW_GHCR_USERNAME:-$existing_user}"
-    category="$(install_docker_error_category "$context" "$PULL_OUTPUT")"
-    case "$category" in
-      login-needed | bad-credentials | scope)
-        tries=$((tries + 1))
-        [ "$tries" -le 3 ] || die "$(install_docker_error_message "$context" "$PULL_OUTPUT" "$user_for_messages")"
-        if [ "$category" != login-needed ]; then
-          install_docker_error_message "$context" "$PULL_OUTPUT" "$user_for_messages"
-        fi
-        login_interactive
-        context=pull-auth
-        ;;
-      *)
-        die "$(install_docker_error_message "$context" "$PULL_OUTPUT" "$user_for_messages")"
-        ;;
-    esac
-  done
-
-  # The pull worked without asking -- an existing `docker login`, say.
-  # One-click updates pull from inside a container, which can't read
-  # Docker Desktop's credential store, so they need the token in .env.
-  if [ -z "$NEW_GHCR_TOKEN" ] && [ -z "$existing_token" ]; then
-    if [ "$INSTALL_YES" != true ] && have_tty; then
-      echo
-      echo "One-click updates need your GitHub username and a read:packages token saved"
-      echo "in $ENV_FILE. You can skip this and re-run the installer later."
-      if confirm "Enter them now?"; then
-        login_interactive
+  if [ "$SOURCE" = ghcr ]; then
+    if [ -n "${GHCR_USERNAME:-}" ] || [ -n "${GHCR_TOKEN:-}" ]; then
+      [[ "${GHCR_USERNAME:-}" =~ $INSTALL_GHCR_USERNAME_REGEX ]] ||
+        die "GHCR_USERNAME doesn't look like a GitHub username (letters, digits and - only)."
+      [[ "${GHCR_TOKEN:-}" =~ $INSTALL_GHCR_TOKEN_REGEX ]] ||
+        die "GHCR_TOKEN doesn't look like a GitHub token (letters, digits and _ only)."
+      log "Logging in to ghcr.io as $GHCR_USERNAME"
+      docker_login ghcr.io "$GHCR_USERNAME" "$GHCR_TOKEN" ||
+        die "$(install_docker_error_message login "$LOGIN_OUTPUT" "$GHCR_USERNAME")"
+      NEW_GHCR_USERNAME="$GHCR_USERNAME"
+      NEW_GHCR_TOKEN="$GHCR_TOKEN"
+      logged_in=true
+    elif [ -n "$existing_user" ] && [ -n "$existing_token" ]; then
+      if docker_login ghcr.io "$existing_user" "$existing_token"; then
+        logged_in=true
+      else
+        echo "The GitHub token saved in $ENV_FILE didn't work:"
+        install_docker_error_message login "$LOGIN_OUTPUT" "$existing_user"
       fi
-    else
-      echo "Note: no GitHub token saved -- one-click updates will need one. Re-run the installer to add it."
+    fi
+
+    log "Downloading Fozzie $LATEST_VERSION (this can take a few minutes the first time)"
+    local context=pull category user_for_messages tries=0
+    if [ "$logged_in" = true ]; then
+      context=pull-auth
+    fi
+    until pull_core; do
+      user_for_messages="${NEW_GHCR_USERNAME:-$existing_user}"
+      category="$(install_docker_error_category "$context" "$PULL_OUTPUT")"
+      case "$category" in
+        login-needed | bad-credentials | scope)
+          tries=$((tries + 1))
+          [ "$tries" -le 3 ] || die "$(install_docker_error_message "$context" "$PULL_OUTPUT" "$user_for_messages")"
+          if [ "$category" != login-needed ]; then
+            install_docker_error_message "$context" "$PULL_OUTPUT" "$user_for_messages"
+          fi
+          login_interactive
+          context=pull-auth
+          ;;
+        *)
+          die "$(install_docker_error_message "$context" "$PULL_OUTPUT" "$user_for_messages")"
+          ;;
+      esac
+    done
+  fi
+
+  if [ "$SOURCE" = registry ]; then
+    # The pull worked without a token being given or saved -- an existing
+    # `docker login registry.functionberry.com`, say. One-click updates
+    # pull from inside a container, so they need the token in .env.
+    if [ -z "$NEW_FOZRIA_TOKEN" ] && [ -z "$SAVED_FOZRIA_TOKEN" ]; then
+      if [ "$INSTALL_YES" != true ] && have_tty; then
+        echo
+        echo "One-click updates need your Fozria email and an API token saved in"
+        echo "$ENV_FILE. You can skip this and re-run the installer later."
+        if confirm "Enter them now?"; then
+          login_fozria_interactive
+        fi
+      else
+        echo "Note: no Fozria API token saved -- one-click updates will need one. Re-run the installer to add it."
+      fi
+    fi
+  else
+    # The pull worked without asking -- an existing `docker login`, say.
+    # One-click updates pull from inside a container, which can't read
+    # Docker Desktop's credential store, so they need the token in .env.
+    if [ -z "$NEW_GHCR_TOKEN" ] && [ -z "$existing_token" ]; then
+      if [ "$INSTALL_YES" != true ] && have_tty; then
+        echo
+        echo "One-click updates need your GitHub username and a read:packages token saved"
+        echo "in $ENV_FILE. You can skip this and re-run the installer later."
+        if confirm "Enter them now?"; then
+          login_interactive
+        fi
+      else
+        echo "Note: no GitHub token saved -- one-click updates will need one. Re-run the installer to add it."
+      fi
     fi
   fi
 
@@ -2039,9 +2836,14 @@ main() {
         AGENTS_SKIPPED=pull
         echo
         echo "Warning: couldn't download the agent service, so agents are off for now:"
-        install_docker_error_message pull-auth "$PULL_OUTPUT" "${NEW_GHCR_USERNAME:-$existing_user}"
-        echo "If you haven't yet, accept the fozzie-dist-agent and fozzie-dist-orchestrator"
-        echo "invites, then re-run this installer. Carrying on without agents."
+        if [ "$SOURCE" = registry ]; then
+          install_registry_error_message pull-auth "$PULL_OUTPUT" "${NEW_FOZRIA_USERNAME:-$SAVED_FOZRIA_USERNAME}"
+          echo "Re-run this installer once that's sorted. Carrying on without agents."
+        else
+          install_docker_error_message pull-auth "$PULL_OUTPUT" "${NEW_GHCR_USERNAME:-$existing_user}"
+          echo "If you haven't yet, accept the fozzie-dist-agent and fozzie-dist-orchestrator"
+          echo "invites, then re-run this installer. Carrying on without agents."
+        fi
       fi
     fi
   fi
@@ -2098,9 +2900,25 @@ main() {
     echo
     echo "Warning: --hsts preload commits every subdomain of the registered domain to HTTPS, in every browser, and is very slow to undo."
   fi
+  # The release registry (ADR-0325): a second site on the same Caddy, so
+  # it only exists with a domain. Its own notice whenever it's new or
+  # changes; a re-run that keeps it says nothing.
+  local REGISTRY_DOMAIN prev_registry
+  REGISTRY_DOMAIN="$(install_registry_domain_wanted "$ENV_FILE" "$INSTALL_REGISTRY_DOMAIN" "$INSTALL_NO_REGISTRY" "$DOMAIN")"
+  prev_registry="$(install_lower "$(install_env_get "$ENV_FILE" FOZZIE_REGISTRY_DOMAIN)")"
+  if [ -n "$REGISTRY_DOMAIN" ] && [ "$REGISTRY_DOMAIN" != "$prev_registry" ]; then
+    echo
+    install_registry_notice "$REGISTRY_DOMAIN"
+    if [ "$INSTALL_YES" != true ] && have_tty; then
+      confirm "Serve a release registry at https://$REGISTRY_DOMAIN?" || die "Nothing changed."
+    fi
+  fi
   # Warns only: DNS can be added after the install, and Caddy retries.
   if [ -n "$DOMAIN" ]; then
     check_domain_dns "$DOMAIN"
+  fi
+  if [ -n "$REGISTRY_DOMAIN" ]; then
+    check_domain_dns "$REGISTRY_DOMAIN"
   fi
 
   # --- 6. docker-compose.yml and .env -----------------------------------
@@ -2121,7 +2939,9 @@ main() {
     "$(openssl rand -hex 24)" "$(openssl rand -base64 32)" "$(openssl rand -hex 32)" \
     "$PROJECT" "$DIR" "$(openssl rand -hex 32)" "$NAME" "$INSTALL_AGENTS" "$AGENTS_AVAILABLE" \
     "$INSTALL_BIND_ADDRESS" "$INSTALL_PUBLIC_HOST" "$INSTALL_LOCALHOST_ONLY" \
-    "$INSTALL_DOMAIN" "$INSTALL_NO_DOMAIN" "$INSTALL_HSTS")" ||
+    "$INSTALL_DOMAIN" "$INSTALL_NO_DOMAIN" "$INSTALL_HSTS" \
+    "$INSTALL_REGISTRY_DOMAIN" "$INSTALL_NO_REGISTRY" "$(openssl rand -hex 32)" \
+    "$NEW_FOZRIA_USERNAME" "$NEW_FOZRIA_TOKEN")" ||
     die "Couldn't write $ENV_FILE."
   # Hex for new installs (see install_url_safe_password); this catches one
   # made by 0.1.0's installer, whose password can never work. Its database
@@ -2149,10 +2969,20 @@ main() {
   bind_address="$(install_env_get "$DIR/.env.tmp" FOZZIE_BIND_ADDRESS)"
   # The caddy service's config, with a domain (ADR-0277's 2026-11-21
   # amendment): generated here, since only docker-compose.yml is
-  # downloaded, and rewritten on every run.
+  # downloaded, and rewritten on every run. With a release registry
+  # (ADR-0325), the Caddyfile gets its second site, and the registry's
+  # config and supervisor are generated beside it.
+  local registry_domain
+  registry_domain="$(install_env_get "$DIR/.env.tmp" FOZZIE_REGISTRY_DOMAIN)"
   if [ -n "$DOMAIN" ]; then
-    install_caddyfile "$DOMAIN" "$(install_env_get "$DIR/.env.tmp" FOZZIE_HSTS)" >"$DIR/Caddyfile.tmp" ||
+    install_caddyfile "$DOMAIN" "$(install_env_get "$DIR/.env.tmp" FOZZIE_HSTS)" "$registry_domain" >"$DIR/Caddyfile.tmp" ||
       die "Couldn't write $DIR/Caddyfile."
+  fi
+  if [ -n "$registry_domain" ]; then
+    install_registry_config "$registry_domain" "$DOMAIN" >"$DIR/registry-config.yml.tmp" ||
+      die "Couldn't write $DIR/registry-config.yml."
+    install_registry_supervisor >"$DIR/registry-supervisor.sh.tmp" ||
+      die "Couldn't write $DIR/registry-supervisor.sh."
   fi
 
   DC_FILE="$DIR/docker-compose.yml.tmp"
@@ -2191,6 +3021,17 @@ main() {
     fi
     mv "$DIR/Caddyfile.tmp" "$DIR/Caddyfile"
   fi
+  # Likewise the registry's files: single-file binds, so a change needs
+  # the registry recreated.
+  local registry_files_changed=false registry_file
+  for registry_file in registry-config.yml registry-supervisor.sh; do
+    if [ -f "$DIR/$registry_file.tmp" ]; then
+      if [ -f "$DIR/$registry_file" ] && ! cmp -s "$DIR/$registry_file.tmp" "$DIR/$registry_file"; then
+        registry_files_changed=true
+      fi
+      mv "$DIR/$registry_file.tmp" "$DIR/$registry_file"
+    fi
+  done
   DC_FILE="$DIR/docker-compose.yml"
   DC_ENV="$ENV_FILE"
 
@@ -2203,7 +3044,7 @@ main() {
 
   log "Starting Fozzie instance \"$NAME\""
   # COMPOSE_PROFILES in .env decides whether this starts the orchestrator
-  # ("agents") and Caddy ("domain").
+  # ("agents"), Caddy ("domain") and the release registry ("registry").
   if ! dc up -d; then
     case ",$profiles," in
       *,domain,*)
@@ -2233,6 +3074,23 @@ main() {
       # back on reuses the certificates. A no-op when there isn't one.
       dc --profile domain rm -sf caddy >/dev/null 2>&1 || true
       rm -f "$DIR/Caddyfile"
+      ;;
+  esac
+  case ",$profiles," in
+    *,registry,*)
+      if [ "$registry_files_changed" = true ]; then
+        dc up -d --no-deps --force-recreate registry ||
+          die "" "Couldn't restart the release registry with its new configuration -- see the output above. Its logs:" \
+            "  $dc_cmd logs registry"
+      fi
+      ;;
+    *)
+      # Likewise a release registry left running alone (--no-registry, or
+      # --no-domain, which drops it too) is removed, with its two files.
+      # Its volume stays, so turning it back on finds the stored images.
+      # A no-op when there isn't one.
+      dc --profile registry rm -sf registry >/dev/null 2>&1 || true
+      rm -f "$DIR/registry-config.yml" "$DIR/registry-supervisor.sh"
       ;;
   esac
   local agents_on=false
@@ -2365,6 +3223,14 @@ main() {
     echo "  $dc_cmd logs caddy"
     echo "Stop serving at $DOMAIN (back to this machine only):"
     echo "  curl -fsSL $FOZZIE_RELEASES_URL/install.sh | bash -s --$update_args --no-domain"
+  fi
+  if [ -n "$REGISTRY_DOMAIN" ]; then
+    echo "Release registry: https://$REGISTRY_DOMAIN -- it serves nothing until an admin enables"
+    echo "the release registry in Fozria (see \"Serve releases from this server\" in"
+    echo "docs/DEPLOY_TO_A_SERVER.md). Its logs:"
+    echo "  $dc_cmd logs registry"
+    echo "Remove the registry (its stored images stay in their volume):"
+    echo "  curl -fsSL $FOZZIE_RELEASES_URL/install.sh | bash -s --$update_args --no-registry"
   fi
   if [ -n "$bind_address" ] && ! install_is_loopback "$bind_address"; then
     case "$public_dashboard_url" in
