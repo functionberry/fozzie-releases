@@ -1,7 +1,30 @@
 {
   "schema": 1,
-  "latest": "0.1.15",
+  "latest": "0.1.16",
   "releases": [
+    {
+      "version": "0.1.16",
+      "publishedAt": "2026-11-26T04:39:52.947Z",
+      "minUpgradableFrom": "0.1.0",
+      "lastMigration": "20261215120000_ai_resource_daily_allowance",
+      "notes": "Security: old browser sign-ins are now held to the 2FA requirement and 'sign out everywhere', with an extra check before one admin resets another admin's 2FA. Spend: realistic estimates for attempts with no reported usage, metered vs estimated spend everywhere, admins can correct an estimate, and paused agents say when they resume with Resume now and Extend for today. New: the Pipeline health report (first-time-through, rework by cause, reviewer activity, with drill-down) and cost on work items (Overview card, children and Explorer columns). Agents: a review checklist with a summary every time, and planning that makes sure work has someone to pick it up. First release also published to registry.functionberry.com.\n\n- Pipeline health: cost per PR, HIGHEST_COST drill-down and Cost headline\n- Give acceptInvite tests that hash twice a 20s timeout (flaked at 5s under load)\n- newWorkOrdering: name unassigned items in creation order\n- Pipeline health 4c (dashboard): compact Pipeline health card on a repository's Overview\n- Pipeline health 4b (dashboard): drill-down dialog listing the PRs behind each headline number and rework origin\n- Cost on work 3a (dashboard): admin-only \"Show cost\" toggle on the Children tab, with a shared WorkCostCell\n- Rename the daily-allowance migration past main's newest a third time (ADR-0293)\n- Pipeline health 4a (dashboard): the Pipeline health page at /reports/pipeline-health (ADR-0330)\n- sessionSettings test: don't race authCredential.test.ts on the shared settings row\n- Cost on work 2/3 (dashboard): Cost card on every work item's Overview and spend to date on Reports rows\n- Spend guard estimates 5/5 (dashboard): admins adjust or clear an estimated charge from the estimated-attempts list\n",
+      "images": {
+        "core-api": "ghcr.io/functionberry/fozzie-dist-core-api@sha256:ea1c1b4f18f4713fcb4129370afba62a08a0b44376b67bef4b900203ea568988",
+        "dashboard": "ghcr.io/functionberry/fozzie-dist-dashboard@sha256:a33e8dd68bdbaf37bd15ffef676cb8efa47a3ddf0fcfdb07a28eccd9c6dc760b",
+        "updater": "ghcr.io/functionberry/fozzie-dist-updater@sha256:f2d15963feda7e5b889139f21c214584a3b5ca559fdb9c7903b3b9b7da2ebff2",
+        "agent": "ghcr.io/functionberry/fozzie-dist-agent@sha256:c419052045132d8b1fdd3fedaf57a69e01148a7f76d4661405d2bd9c40c80966",
+        "orchestrator": "ghcr.io/functionberry/fozzie-dist-orchestrator@sha256:dc76cc83c006483a75b9d8743efe0b4acd4d3eecb77133f890bd745d9e8443e8"
+      },
+      "composeSha256": "610eee94d2c8d0cc819e52032674121b021ea3a64c3b2efc98f3d334b62c2faa",
+      "migrationsSha256": "ea0697d9ac76a91effbc2877f513116cfd95858687dd976ca5fb174097a7f6ad",
+      "mirrors": {
+        "core-api": "registry.functionberry.com/fozria-dist-core-api@sha256:ea1c1b4f18f4713fcb4129370afba62a08a0b44376b67bef4b900203ea568988",
+        "dashboard": "registry.functionberry.com/fozria-dist-dashboard@sha256:a33e8dd68bdbaf37bd15ffef676cb8efa47a3ddf0fcfdb07a28eccd9c6dc760b",
+        "updater": "registry.functionberry.com/fozria-dist-updater@sha256:f2d15963feda7e5b889139f21c214584a3b5ca559fdb9c7903b3b9b7da2ebff2",
+        "agent": "registry.functionberry.com/fozria-dist-agent@sha256:c419052045132d8b1fdd3fedaf57a69e01148a7f76d4661405d2bd9c40c80966",
+        "orchestrator": "registry.functionberry.com/fozria-dist-orchestrator@sha256:dc76cc83c006483a75b9d8743efe0b4acd4d3eecb77133f890bd745d9e8443e8"
+      }
+    },
     {
       "version": "0.1.15",
       "publishedAt": "2026-11-25T21:44:19.028Z",
