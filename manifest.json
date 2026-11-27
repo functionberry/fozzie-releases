@@ -1,8 +1,31 @@
 {
   "schema": 1,
-  "latest": "0.1.17",
+  "latest": "0.1.18",
   "movedTo": "https://releases.functionberry.com/manifest.json",
   "releases": [
+    {
+      "version": "0.1.18",
+      "publishedAt": "2026-11-27T23:39:35.973Z",
+      "minUpgradableFrom": "0.1.0",
+      "lastMigration": "20261231120000_invite_allowance",
+      "notes": "Fresh installs show the create-your-account screen again; a one-click 'Install Fozria on your machine' command in Your settings (one-time install codes); Discussion on work items: comments, replies, edit and delete; invite allowances (back end); capability levels groundwork for using cheaper models on mechanical steps.\n\n- Capability levels 2b (core): spend and usage per level\n- Rename invite_allowance migration to so it sorts after install_codes\n- Discussion 2b (dashboard): Reply, Edit and Delete on the Discussion tab\n- Rename profile_level_models migration to sort after main's install_codes\n- Discussion 2a (dashboard): Discussion tab with comment count, thread, composer and Load more (ADR-0333)\n- Install codes 3 (dashboard): Your settings > Install Fozria on your machine\n- Fix notifyIdleQueue and mainMergeConflict timeouts on the merged tree\n- De-flake backupWait version-mismatch test: flip the fake by request count, not a 150ms timer\n- Installer: --code swaps a one-time install code for registry credentials\n- Discussion 5/5 (core): federate comments and replies on shared subtrees (ADR-0336)\n- Capability levels 3 (core): template level defaults, task/epic levels as minimums for their steps, a level per split part (ADR-0337)\n- Capability levels: BASIC < STANDARD < ADVANCED replace model tiers for work and participants (ADR-0335)\n",
+      "images": {
+        "core-api": "ghcr.io/functionberry/fozzie-dist-core-api@sha256:104193f53dbf006926600392d5503b1649d735ac3a70d29a895f0fe62a5e54c9",
+        "dashboard": "ghcr.io/functionberry/fozzie-dist-dashboard@sha256:ff6d0052e3e88a1056a78a78909364edea74a2bd8932960661cba28c60b8eb55",
+        "updater": "ghcr.io/functionberry/fozzie-dist-updater@sha256:4414e3c62f9f745df92cd4201826aa4c078d9b9f4453833447ed7a5168cdb869",
+        "agent": "ghcr.io/functionberry/fozzie-dist-agent@sha256:3870930da50e3117de4baf8d3d34ec9836cb76306c25b6ce76fea98ee941260b",
+        "orchestrator": "ghcr.io/functionberry/fozzie-dist-orchestrator@sha256:9d16494c566c48e1b1a7d2646d066b83be94f8974236357c5be4cb5990a3c373"
+      },
+      "composeSha256": "8c50cd7dbe79d5fdf0624f61f06c8f1fb855418b627587e91fb3c1a4aa1bcf64",
+      "migrationsSha256": "8ae078e3a3265bb2e0e8c7f313c188188dd9878f5456108019c10cb8bf598fe3",
+      "mirrors": {
+        "core-api": "registry.functionberry.com/fozria-dist-core-api@sha256:104193f53dbf006926600392d5503b1649d735ac3a70d29a895f0fe62a5e54c9",
+        "dashboard": "registry.functionberry.com/fozria-dist-dashboard@sha256:ff6d0052e3e88a1056a78a78909364edea74a2bd8932960661cba28c60b8eb55",
+        "updater": "registry.functionberry.com/fozria-dist-updater@sha256:4414e3c62f9f745df92cd4201826aa4c078d9b9f4453833447ed7a5168cdb869",
+        "agent": "registry.functionberry.com/fozria-dist-agent@sha256:3870930da50e3117de4baf8d3d34ec9836cb76306c25b6ce76fea98ee941260b",
+        "orchestrator": "registry.functionberry.com/fozria-dist-orchestrator@sha256:9d16494c566c48e1b1a7d2646d066b83be94f8974236357c5be4cb5990a3c373"
+      }
+    },
     {
       "version": "0.1.17",
       "publishedAt": "2026-11-27T03:21:55.260Z",

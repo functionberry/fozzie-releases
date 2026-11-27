@@ -15,7 +15,7 @@ you may still see the old name in URLs, package names and settings.
 - **Docker.** Docker Desktop on macOS or Windows, or Docker Engine on
   Linux. It needs Docker Compose **v2.20.0 or newer**: check with
   `docker compose version`.
-- **A Fozria account on app.functionberry.com** (Mark invites you).
+- **An app.functionberry.com account** (Mark invites you).
   Fozria's images are on `registry.functionberry.com`, and access is per
   account.
 - **About 2 GB of free disk** for the images, plus whatever your data
@@ -28,11 +28,30 @@ you may still see the old name in URLs, package names and settings.
 2. Mark adds you to the **Release testers** group. Until he has, the
    installer can log in but can't download Fozria.
 
+## The install command
+
+The easiest way to install: on app.functionberry.com open **Your settings
+→ Install Fozria on your machine**, press the button, copy the command,
+and paste it in a terminal (macOS, Linux, or Windows via WSL). It looks
+like this:
+
+```sh
+curl -fsSL https://releases.functionberry.com/install.sh | bash -s -- --code K7QX-M2PD-9WFA
+```
+
+The code in it works once, for a short time. The installer swaps it for
+a download-only API token, logs in to `registry.functionberry.com` with
+it, and saves the token in the install's `.env` (never the code). If the
+code has expired or was already used, press the button again for a new
+command. You can add other options after the code, for example
+`--name second --core-port 4010 --dashboard-port 5183`.
+
 ## Creating an API token
 
-The installer logs in to `registry.functionberry.com` with your Fozria
-account's email and an **API token** (your account password won't work).
-To make one:
+If you'd rather not use the install command, the installer can log in to
+`registry.functionberry.com` with your app.functionberry.com account's
+email and an **API token** (your account password won't work). To make
+one:
 
 1. Sign in at <https://app.functionberry.com>.
 2. Open **Your settings → API tokens** and create a token.
@@ -46,8 +65,11 @@ and re-run the installer.
 
 Fozria's downloads are moving from GitHub's registry (`ghcr.io`) to
 `registry.functionberry.com`. When you re-run the installer in a
-terminal, it now offers to switch your install to your Fozria account:
-say yes, and enter your Fozria email and API token (see
+terminal, it now offers to switch your install to your
+app.functionberry.com account. The easiest way is to run the command from
+**Your settings → Install Fozria on your machine** instead (see
+[The install command](#the-install-command)); or say yes and enter your
+app.functionberry.com email and API token (see
 [Moving an existing install](#moving-an-existing-install)). If you say
 no, or run it with `--yes`, it carries on with `ghcr.io` as before, and
 your GitHub token keeps working until those downloads are retired. If it
@@ -58,16 +80,23 @@ and re-run the installer.
 
 ## Installing
 
-In a terminal, run:
+On app.functionberry.com open **Your settings → Install Fozria on your
+machine**, press the button, copy the command, and paste it in a terminal
+(macOS, Linux, or Windows via WSL). See
+[The install command](#the-install-command).
+
+Or, in a terminal, run:
 
 ```sh
 curl -fsSL https://releases.functionberry.com/install.sh | bash
 ```
 
-It checks Docker, then asks for your Fozria email and API token (the
-token isn't shown as you type). It downloads Fozria, starts it, and opens
-your browser on a "create your account" page. The first install can take
-a few minutes.
+It checks Docker, then asks for your app.functionberry.com email and API
+token (the token isn't shown as you type; see
+[Creating an API token](#creating-an-api-token)).
+
+Either way, it downloads Fozria, starts it, and opens your browser on a
+"create your account" page. The first install can take a few minutes.
 
 Once you've signed in, you can add one of the two example projects
 (Kitchen renovation, or Example: launch a simple website) from **Help →
@@ -78,8 +107,8 @@ it may not need to ask. It then offers to save your email and API token
 anyway: in-app updates will need them (see [Updating](#updating)). You can skip that and
 add them later by re-running the installer.
 
-To run it without any questions, set the credentials in the environment
-and pass `--yes`:
+To run it without any questions, add `--yes` after the install command's
+code, or set the credentials in the environment and pass `--yes`:
 
 ```sh
 curl -fsSL https://releases.functionberry.com/install.sh | FOZRIA_REGISTRY_USERNAME=you@example.com FOZRIA_REGISTRY_TOKEN=... bash -s -- --yes
@@ -228,18 +257,26 @@ one):
 curl -fsSL https://releases.functionberry.com/install.sh | bash
 ```
 
-If your install still downloads from GitHub (`ghcr.io`), the installer
-offers to switch it to your Fozria account: say yes, then enter your
-Fozria email and API token (see [Creating an API token](#creating-an-api-token)).
-It keeps your data and settings, takes a backup first, and from then on
-the install checks `releases.functionberry.com` for updates.
+If your install still downloads from GitHub (`ghcr.io`), switch it to
+your app.functionberry.com account. On app.functionberry.com open **Your
+settings → Install Fozria on your machine**, press the button, copy the
+command, and paste it in a terminal (macOS, Linux, or Windows via WSL),
+adding `--name X` after the code if you used one. It switches without
+asking for an email or token.
 
-To do it without any questions, read the email and token into the
-environment first (the token isn't shown as you type), then pass `--yes`:
+Or re-run the installer as above: it offers to switch, and if you say
+yes, asks for your app.functionberry.com email and API token (see
+[Creating an API token](#creating-an-api-token)). Either way it keeps
+your data and settings, takes a backup first, and from then on the
+install checks `releases.functionberry.com` for updates.
+
+To do it with an API token and without any questions, read the email and
+token into the environment first (the token isn't shown as you type),
+then pass `--yes`. This works in bash and zsh (macOS's default shell):
 
 ```sh
-read -rp "Fozria email: " FOZRIA_REGISTRY_USERNAME
-read -rsp "API token: " FOZRIA_REGISTRY_TOKEN; echo
+printf 'app.functionberry.com email: '; read -r FOZRIA_REGISTRY_USERNAME
+printf 'API token: '; read -rs FOZRIA_REGISTRY_TOKEN; echo
 curl -fsSL https://releases.functionberry.com/install.sh | FOZRIA_REGISTRY_USERNAME="$FOZRIA_REGISTRY_USERNAME" FOZRIA_REGISTRY_TOKEN="$FOZRIA_REGISTRY_TOKEN" bash -s -- --yes
 ```
 
@@ -540,6 +577,20 @@ email is wrong, or the token has expired, been revoked, or isn't an API
 token (your account password won't work). Make a new one (see
 [Creating an API token](#creating-an-api-token)) and run the installer
 again.
+
+**"This install code has expired or was already used".** The code in the
+install command only works once, for a short time. On
+app.functionberry.com open **Your settings → Install Fozria on your
+machine**, press the button again, and run the new command.
+
+**"app.functionberry.com didn't recognise this install code".** Part of
+the command was probably cut off when it was copied. Copy the whole
+command again, or press the button for a new one.
+
+**"Couldn't swap the install code".** The installer couldn't reach
+app.functionberry.com. Check your internet connection and try again, or
+log in with an API token instead (see
+[Creating an API token](#creating-an-api-token)).
 
 **"Your Fozria account isn't in Release testers".** Your token works, but
 your account can't download Fozria yet. Ask Mark to add your email to

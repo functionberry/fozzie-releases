@@ -5,6 +5,11 @@
 # Install, or update to the latest release (the same command):
 #   curl -fsSL https://releases.functionberry.com/install.sh | bash
 #
+# With a one-time install code from app.functionberry.com (Your settings
+# → Install Fozria on your machine), which logs in to the release
+# registry without asking for an email or API token:
+#   curl -fsSL https://releases.functionberry.com/install.sh | bash -s -- --code K7QX-M2PD-9WFA
+#
 # A second, independent instance: give it a name and two free ports the
 # first time. Later runs just need the name -- its ports are remembered.
 #   curl -fsSL https://releases.functionberry.com/install.sh | bash -s -- --name second --core-port 4010 --dashboard-port 5183
@@ -32,11 +37,13 @@
 # than generate a new password over it); reads the latest
 # release's image refs from latest.env; downloads the images (ADR-0329):
 # when the release is also on registry.functionberry.com, from there,
-# logged in with your Fozria email and API token (asked for if they
-# aren't in the environment or .env), falling back to ghcr.io only if the
-# registry can't be reached (an install that only has a GitHub token so
-# far is offered the switch to a Fozria account when run on a terminal,
-# and otherwise stays on ghcr.io); when it isn't, from ghcr.io, logging
+# logged in with your app.functionberry.com account's email and an API
+# token (--code swaps a one-time install code for them first; otherwise
+# they're asked for if they aren't in the environment or .env), falling
+# back to ghcr.io only if the registry can't be reached (an install that
+# only has a GitHub token so far is offered the switch to an
+# app.functionberry.com account when run on a terminal, and otherwise
+# stays on ghcr.io); when it isn't, from ghcr.io, logging
 # in if the images need it (walking you through creating a read:packages
 # token); pulls the
 # agent and orchestrator images when agents are on (carrying on without
@@ -188,6 +195,9 @@ INSTALL_GHCR_TOKEN_REGEX="^[${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}_]+
 INSTALL_FOZRIA_REGISTRY=registry.functionberry.com
 INSTALL_FOZRIA_APP=app.functionberry.com
 INSTALL_FOZRIA_TOKENS_WHERE="Your settings → API tokens"
+# Where the app shows the one-click install command, with its one-time
+# install code (--code).
+INSTALL_FOZRIA_INSTALL_WHERE="Your settings → Install Fozria on your machine"
 
 # What a Fozria account's email and an API token can look like -- checked
 # before either is used, so neither can inject anything into .env. The
@@ -196,6 +206,13 @@ INSTALL_FOZRIA_TOKENS_WHERE="Your settings → API tokens"
 # INSTALL_ENV_VALUE_REGEX. The token: 64 lowercase hex (authCredential.ts).
 INSTALL_FOZRIA_USERNAME_REGEX="^[${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}._+-]+@[${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}-]+(\\.[${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}-]+)+\$"
 INSTALL_FOZRIA_TOKEN_REGEX='^[0123456789abcdef]{64}$'
+
+# What a one-time install code (--code) can look like: 12 letters and
+# digits, shown as XXXX-XXXX-XXXX. Lenient on purpose -- the app
+# normalises case and hyphens and checks the Crockford base32 alphabet
+# itself -- but strict enough that the code is JSON-safe as it stands.
+INSTALL_CODE_CHARS="${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}"
+INSTALL_CODE_REGEX="^[${INSTALL_CODE_CHARS}]{4}-?[${INSTALL_CODE_CHARS}]{4}-?[${INSTALL_CODE_CHARS}]{4}\$"
 
 # Every value the installer writes into .env is from this set, so it's
 # written unquoted and reads back the same to Compose and to
@@ -280,6 +297,12 @@ Options:
   --no-registry           Stop serving the release registry: removes its
                           container and its two files, keeping the volume
                           with its stored images.
+  --code CODE             A one-time install code from app.functionberry.com
+                          (Your settings → Install Fozria on your machine):
+                          logs in to registry.functionberry.com without
+                          asking for an email or API token. Saves the API
+                          token it gets in .env; the code itself is never
+                          saved.
   --uninstall             Remove this instance: asks whether to keep its data
                           (and .env, which that data needs) or delete
                           everything. Needs a terminal; --yes doesn't skip it.
@@ -288,11 +311,11 @@ Options:
 
 Environment:
   FOZRIA_REGISTRY_USERNAME, FOZRIA_REGISTRY_TOKEN
-                              Your Fozria account's email and an API token
-                              from app.functionberry.com (Your settings →
+                              Your app.functionberry.com account's email
+                              and an API token made there (Your settings →
                               API tokens), to log in to
                               registry.functionberry.com without being
-                              asked.
+                              asked. --code is the easier way.
   GHCR_USERNAME, GHCR_TOKEN   Your GitHub username and read:packages token,
                               to log in to ghcr.io without being asked: for
                               existing testers still on a GitHub token, and
@@ -435,10 +458,13 @@ install_default_dir() {
 # install_hsts_wanted, ADR-0277's 2026-11-21 amendment), and
 # INSTALL_REGISTRY_DOMAIN (--registry-domain, lowercased, "" when not
 # given) and INSTALL_NO_REGISTRY (true/false; see
-# install_registry_domain_wanted, ADR-0325). Takes both "--flag value"
+# install_registry_domain_wanted, ADR-0325), and INSTALL_CODE (--code, a
+# one-time install code, "" when not given). Takes both "--flag value"
 # and "--flag=value". An unknown flag, a missing value, an invalid name,
-# port, bind address, public host, domain, registry domain or HSTS mode,
-# both agent flags at once, or network flags that contradict each other
+# port, bind address, public host, domain, registry domain, HSTS mode or
+# install code (whose message never repeats it), --code with
+# --uninstall, both agent flags at once, or network flags that contradict
+# each other
 # (--localhost-only with --bind-address or --public-host; a loopback
 # --bind-address with --public-host; --domain, --hsts or
 # --registry-domain with --no-domain, --localhost-only, --bind-address or
@@ -465,6 +491,7 @@ install_parse_args() {
   INSTALL_HSTS=""
   INSTALL_REGISTRY_DOMAIN=""
   INSTALL_NO_REGISTRY=false
+  INSTALL_CODE=""
   local agent_flag=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -513,12 +540,12 @@ install_parse_args() {
         shift
         continue
         ;;
-      --name=* | --core-port=* | --dashboard-port=* | --import-env=* | --dir=* | --bind-address=* | --public-host=* | --domain=* | --hsts=* | --registry-domain=*)
+      --name=* | --core-port=* | --dashboard-port=* | --import-env=* | --dir=* | --bind-address=* | --public-host=* | --domain=* | --hsts=* | --registry-domain=* | --code=*)
         flag="${1%%=*}"
         value="${1#*=}"
         shift
         ;;
-      --name | --core-port | --dashboard-port | --import-env | --dir | --bind-address | --public-host | --domain | --hsts | --registry-domain)
+      --name | --core-port | --dashboard-port | --import-env | --dir | --bind-address | --public-host | --domain | --hsts | --registry-domain | --code)
         flag="$1"
         if [ "$#" -lt 2 ]; then
           value=""
@@ -599,10 +626,23 @@ install_parse_args() {
         fi
         INSTALL_HSTS="$value"
         ;;
+      --code)
+        # Never echoes the value, unlike the other flags: it's a secret.
+        if ! install_valid_install_code "$value"; then
+          printf "Invalid --code: it should look like XXXX-XXXX-XXXX (copy the whole command from https://%s under 'Install Fozria on your machine').\n" "$INSTALL_FOZRIA_APP" >&2
+          return 1
+        fi
+        INSTALL_CODE="$value"
+        ;;
       --import-env) INSTALL_IMPORT_ENV="$value" ;;
       --dir) INSTALL_DIR="$value" ;;
     esac
   done
+  if [ -n "$INSTALL_CODE" ] && [ "$INSTALL_UNINSTALL" = true ]; then
+    printf -- '--code and --uninstall contradict each other -- pick one.\n\n' >&2
+    install_usage >&2
+    return 1
+  fi
   if [ "$INSTALL_LOCALHOST_ONLY" = true ]; then
     if [ -n "$INSTALL_BIND_ADDRESS" ]; then
       printf -- '--localhost-only and --bind-address contradict each other -- pick one.\n\n' >&2
@@ -1903,6 +1943,122 @@ install_registry_error_message() {
   esac
 }
 
+# --- One-time install codes (--code) --------------------------------
+# The app's "Install Fozria on your machine" button gives a command with a
+# one-time code; install.sh swaps it, once, for the account's email and a
+# download-only API token at POST https://app.functionberry.com/registry/
+# install-code, then uses them exactly as if they'd been given as
+# FOZRIA_REGISTRY_USERNAME / FOZRIA_REGISTRY_TOKEN. These are the pure
+# parts; install.sh does the request itself.
+
+# True (0) iff CODE has an install code's shape (INSTALL_CODE_REGEX).
+#   install_valid_install_code CODE
+install_valid_install_code() {
+  [[ "$1" =~ $INSTALL_CODE_REGEX ]]
+}
+
+# The app's endpoint that swaps an install code for an API token.
+install_code_url() {
+  printf 'https://%s/registry/install-code\n' "$INSTALL_FOZRIA_APP"
+}
+
+# A machine name safe to put in JSON as it is: RAW (the hostname) kept to
+# letters, digits and . _ -, at most 64 characters, or "unknown" when
+# nothing's left.
+#   install_machine_name RAW
+install_machine_name() {
+  local name
+  name="$(printf '%s' "$1" | LC_ALL=C tr -cd "${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}._-" | cut -c1-64)"
+  printf '%s\n' "${name:-unknown}"
+}
+
+# The request body for install_code_url. CODE has passed
+# install_valid_install_code and MACHINE came from install_machine_name,
+# so neither needs escaping.
+#   install_code_request_body CODE MACHINE
+install_code_request_body() {
+  printf '{"code":"%s","machine":"%s"}\n' "$1" "$2"
+}
+
+# The string value of KEY in a one-line JSON object BODY ("" when it isn't
+# there), without jq: the first "KEY":"value", allowing spaces around the
+# colon. Only for values with no escaped quotes in them.
+#   install_code_response_field BODY KEY
+install_code_response_field() {
+  printf '%s' "$1" | tr -d '\r\n' |
+    { grep -o "\"$2\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" || true; } | head -n 1 |
+    sed 's/^[^:]*:[[:space:]]*"//; s/"$//'
+}
+
+# Parses a 200 response from install_code_url into CODE_FOZRIA_USERNAME
+# and CODE_FOZRIA_TOKEN. Returns 1 (leaving both "") unless the email
+# passes INSTALL_FOZRIA_USERNAME_REGEX and the token
+# INSTALL_FOZRIA_TOKEN_REGEX, so nothing else can reach .env.
+#   install_code_parse_success BODY
+install_code_parse_success() {
+  local user token
+  CODE_FOZRIA_USERNAME=""
+  CODE_FOZRIA_TOKEN=""
+  user="$(install_code_response_field "$1" username)"
+  token="$(install_code_response_field "$1" token)"
+  [[ "$user" =~ $INSTALL_FOZRIA_USERNAME_REGEX ]] || return 1
+  [[ "$token" =~ $INSTALL_FOZRIA_TOKEN_REGEX ]] || return 1
+  CODE_FOZRIA_USERNAME="$user"
+  CODE_FOZRIA_TOKEN="$token"
+  return 0
+}
+
+# The first error code in an error response from install_code_url,
+# {"errors":[{"code":"X","message":...}]}, or "" when there isn't one.
+# Only letters, digits and _ come back.
+#   install_code_error_code BODY
+install_code_error_code() {
+  local errors
+  case "$1" in
+    *'"errors"'*) ;;
+    *) return 0 ;;
+  esac
+  errors="$(printf '%s' "$1" | tr -d '\r\n' | sed 's/.*"errors"//')"
+  install_code_response_field "$errors" code | LC_ALL=C tr -cd "${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}_"
+  return 0
+}
+
+# What to tell the owner when swapping the install code didn't work, from
+# the HTTP status (000 when curl couldn't connect) and the response's
+# error code (install_code_error_code, "" for none). Keyed on the error
+# code first, then the status. Never mentions docker or the registry's
+# own login: this is a problem with the code, or with reaching the app.
+#   install_code_error_message HTTP_STATUS ERROR_CODE
+install_code_error_message() {
+  local status="${1:-}" code="${2:-}" kind=other
+  case "$code" in
+    EXPIRED_CODE | USED_CODE) kind=spent ;;
+    UNKNOWN_CODE | INVALID_CODE) kind=unknown ;;
+    TOOMANYREQUESTS) kind=rate-limited ;;
+    "")
+      case "$status" in
+        410) kind=spent ;;
+        429) kind=rate-limited ;;
+      esac
+      ;;
+  esac
+  case "$kind" in
+    spent)
+      echo "This install code has expired or was already used: make a new one on https://$INSTALL_FOZRIA_APP under 'Install Fozria on your machine'"
+      ;;
+    unknown)
+      echo "$INSTALL_FOZRIA_APP didn't recognise this install code. Check you copied the whole command, or make a new one on https://$INSTALL_FOZRIA_APP under 'Install Fozria on your machine'."
+      ;;
+    rate-limited)
+      echo "$INSTALL_FOZRIA_APP has had too many install-code attempts from here. Wait a few minutes, then run this again."
+      ;;
+    *)
+      echo "Couldn't swap the install code at https://$INSTALL_FOZRIA_APP (check your internet connection, then run this again). Or log in with an API token instead: make one on $INSTALL_FOZRIA_APP under $INSTALL_FOZRIA_TOKENS_WHERE, then set FOZRIA_REGISTRY_USERNAME and FOZRIA_REGISTRY_TOKEN:"
+      echo "  curl -fsSL ${FOZZIE_RELEASES_URL:-https://releases.functionberry.com}/install.sh | FOZRIA_REGISTRY_USERNAME=you@example.com FOZRIA_REGISTRY_TOKEN=<64-hex token> bash"
+      ;;
+  esac
+}
+
 # Switches every LATEST_<SERVICE>_IMAGE that has a mirror to that mirror
 # (ADR-0329), once the installer has pulled from the Fozria registry, so
 # .env and `docker compose pull` use the refs it can actually reach. An
@@ -2068,8 +2224,9 @@ no_tty_for_login() {
 }
 
 no_tty_for_fozria_login() {
-  die "Logging in to $INSTALL_FOZRIA_REGISTRY needs your Fozria account's email and an API token, and there's no terminal to ask on." \
-    "Make a token on $INSTALL_FOZRIA_APP under $INSTALL_FOZRIA_TOKENS_WHERE, then set FOZRIA_REGISTRY_USERNAME and FOZRIA_REGISTRY_TOKEN:" \
+  die "Logging in to $INSTALL_FOZRIA_REGISTRY needs your $INSTALL_FOZRIA_APP account's email and an API token, and there's no terminal to ask on." \
+    "The easiest way: on https://$INSTALL_FOZRIA_APP open $INSTALL_FOZRIA_INSTALL_WHERE and run the command it gives you." \
+    "Or make an API token on $INSTALL_FOZRIA_APP under $INSTALL_FOZRIA_TOKENS_WHERE, then set FOZRIA_REGISTRY_USERNAME and FOZRIA_REGISTRY_TOKEN:" \
     "  curl -fsSL $FOZZIE_RELEASES_URL/install.sh | FOZRIA_REGISTRY_USERNAME=you@example.com FOZRIA_REGISTRY_TOKEN=<64-hex token> bash"
 }
 
@@ -2136,8 +2293,11 @@ login_fozria_interactive() {
   if [ "$EXPLAINED_FOZRIA" != true ]; then
     EXPLAINED_FOZRIA=true
     echo
-    echo "Fozria's images are on $INSTALL_FOZRIA_REGISTRY, which needs your Fozria"
-    echo "account's email and an API token to download them:"
+    echo "Fozria's images are on $INSTALL_FOZRIA_REGISTRY, which needs your"
+    echo "$INSTALL_FOZRIA_APP account's email and an API token to download them."
+    echo "The easiest way: on https://$INSTALL_FOZRIA_APP open"
+    echo "$INSTALL_FOZRIA_INSTALL_WHERE and run the command it gives you"
+    echo "instead of this one (press Ctrl-C to stop here). Or, to type them in:"
     echo "  1. Accept your invite on https://$INSTALL_FOZRIA_APP and create your account."
     echo "  2. Make an API token there, under $INSTALL_FOZRIA_TOKENS_WHERE."
     echo "The token is kept in this instance's .env so in-app updates can pull new"
@@ -2146,7 +2306,7 @@ login_fozria_interactive() {
   fi
   while [ "$tries" -lt 3 ]; do
     tries=$((tries + 1))
-    user="$(ask "Fozria email: ")"
+    user="$(ask "$INSTALL_FOZRIA_APP email: ")"
     if ! [[ "$user" =~ $INSTALL_FOZRIA_USERNAME_REGEX ]]; then
       echo "That doesn't look like an email address."
       continue
@@ -2170,6 +2330,36 @@ login_fozria_interactive() {
   die "Giving up after three tries. Check the email and API token, then run this again."
 }
 
+# swap_install_code: swaps --code's one-time install code, once, for the
+# app.functionberry.com account's email and a download-only API token
+# (POST install_code_url). Sets CODE_FOZRIA_USERNAME / CODE_FOZRIA_TOKEN,
+# which registry_access then uses exactly like FOZRIA_REGISTRY_USERNAME /
+# FOZRIA_REGISTRY_TOKEN given in the environment, and NEW_FOZRIA_USERNAME /
+# NEW_FOZRIA_TOKEN straight away, so .env keeps the token even if this
+# release turns out to be only on ghcr.io: the code is spent either way.
+# The code goes to curl on stdin, never in its arguments or the URL, and is
+# never logged. Dies with install_code_error_message when it didn't work.
+swap_install_code() {
+  local tmp="$WORK/install-code.json" machine status body
+  machine="$(install_machine_name "$(hostname 2>/dev/null || uname -n 2>/dev/null || true)")"
+  log "Swapping your install code at $INSTALL_FOZRIA_APP"
+  rm -f "$tmp"
+  status="$(install_code_request_body "$INSTALL_CODE" "$machine" |
+    curl -sS --max-time 30 -X POST -H 'Content-Type: application/json' \
+      --data-binary @- -o "$tmp" -w '%{http_code}' "$(install_code_url)" 2>/dev/null)" || status=000
+  body="$(cat "$tmp" 2>/dev/null || true)"
+  rm -f "$tmp"
+  if [ "$status" = 200 ] && install_code_parse_success "$body"; then
+    NEW_FOZRIA_USERNAME="$CODE_FOZRIA_USERNAME"
+    NEW_FOZRIA_TOKEN="$CODE_FOZRIA_TOKEN"
+    echo "Got an API token for $CODE_FOZRIA_USERNAME."
+    return 0
+  fi
+  CODE_FOZRIA_USERNAME=""
+  CODE_FOZRIA_TOKEN=""
+  die "$(install_code_error_message "$status" "$(install_code_error_code "$body")")"
+}
+
 # registry_fall_back CONTEXT OUTPUT EMAIL: after a network or
 # missing-image failure on the Fozria registry, returns 0 (so the caller
 # carries on with ghcr.io) when ghcr.io can work -- GitHub credentials in
@@ -2189,8 +2379,9 @@ registry_fall_back() {
   die "$(install_registry_error_message "$context" "$output" "$email")"
 }
 
-# registry_access: logs in to the Fozria registry with the Fozria email
-# and API token from the environment or .env (or, when there are none and
+# registry_access: logs in to the Fozria registry with the email and API
+# token from --code (swap_install_code), the environment or .env -- in
+# that order (or, when there are none and
 # a plain pull isn't enough, asks for them), then pulls the core-api
 # mirror. When that worked, sets SOURCE=registry and switches every
 # LATEST_*_IMAGE to its mirror; when it should fall back to ghcr.io (see
@@ -2198,7 +2389,11 @@ registry_fall_back() {
 # as a plain statement, never in a condition, so set -e still applies.
 registry_access() {
   local user="" token="" from="" context=pull category
-  if [ -n "${FOZRIA_REGISTRY_USERNAME:-}" ] || [ -n "${FOZRIA_REGISTRY_TOKEN:-}" ]; then
+  if [ -n "$CODE_FOZRIA_TOKEN" ]; then
+    from=given
+    user="$CODE_FOZRIA_USERNAME"
+    token="$CODE_FOZRIA_TOKEN"
+  elif [ -n "${FOZRIA_REGISTRY_USERNAME:-}" ] || [ -n "${FOZRIA_REGISTRY_TOKEN:-}" ]; then
     [[ "${FOZRIA_REGISTRY_USERNAME:-}" =~ $INSTALL_FOZRIA_USERNAME_REGEX ]] ||
       die "FOZRIA_REGISTRY_USERNAME doesn't look like an email address."
     [[ "${FOZRIA_REGISTRY_TOKEN:-}" =~ $INSTALL_FOZRIA_TOKEN_REGEX ]] ||
@@ -2731,14 +2926,22 @@ main() {
   # this run downloads them from: the registry when it has them and this
   # install has (or is a new install that can be given) a Fozria API
   # token; otherwise ghcr.io, as before. An install with only a GitHub
-  # token is offered the switch to a Fozria account when there's a
-  # terminal to ask on (default no, ADR-0331's 2026-11-26 amendment);
-  # without one, or with --yes, or if the owner says no, it stays on
-  # ghcr.io and says how to switch later.
+  # token is offered the switch to an app.functionberry.com account when
+  # there's a terminal to ask on (default no, ADR-0331's 2026-11-26
+  # amendment); without one, or with --yes, or if the owner says no, it
+  # stays on ghcr.io and says how to switch later. --code is that switch
+  # already made: its install code is swapped first, here (after the
+  # Docker and data checks, so little can fail once it's spent), and its
+  # credentials win over the environment's and .env's.
   NEW_GHCR_USERNAME=""
   NEW_GHCR_TOKEN=""
   NEW_FOZRIA_USERNAME=""
   NEW_FOZRIA_TOKEN=""
+  CODE_FOZRIA_USERNAME=""
+  CODE_FOZRIA_TOKEN=""
+  if [ -n "$INSTALL_CODE" ]; then
+    swap_install_code
+  fi
   SOURCE=ghcr
   local logged_in=false existing_user existing_token
   existing_user="$(install_env_get "$ENV_FILE" GHCR_USERNAME)"
@@ -2752,24 +2955,27 @@ main() {
   fi
 
   if [ -n "$LATEST_CORE_API_MIRROR" ]; then
-    if [ -z "${FOZRIA_REGISTRY_USERNAME:-}" ] && [ -z "${FOZRIA_REGISTRY_TOKEN:-}" ] &&
+    if [ -z "$CODE_FOZRIA_TOKEN" ] &&
+      [ -z "${FOZRIA_REGISTRY_USERNAME:-}" ] && [ -z "${FOZRIA_REGISTRY_TOKEN:-}" ] &&
       { [ -z "$SAVED_FOZRIA_USERNAME" ] || [ -z "$SAVED_FOZRIA_TOKEN" ]; } &&
       [ "$GHCR_CREDS_KNOWN" = true ]; then
       local switch=false
       if [ "$INSTALL_YES" != true ] && have_tty; then
         echo
         echo "Fozria's downloads are moving from GitHub (ghcr.io) to $INSTALL_FOZRIA_REGISTRY."
-        echo "Switching needs an account on https://$INSTALL_FOZRIA_APP that's in Release"
-        echo "testers, and an API token made there under $INSTALL_FOZRIA_TOKENS_WHERE."
-        echo "This install keeps its data either way."
-        if confirm "Switch this install to your Fozria account now?"; then
+        echo "Switching needs your account on https://$INSTALL_FOZRIA_APP, in Release testers."
+        echo "The easiest way: on https://$INSTALL_FOZRIA_APP open"
+        echo "$INSTALL_FOZRIA_INSTALL_WHERE and run the command it gives you."
+        echo "Or switch now with your email and an API token made there under"
+        echo "$INSTALL_FOZRIA_TOKENS_WHERE. This install keeps its data either way."
+        if confirm "Switch this install to your $INSTALL_FOZRIA_APP account now?"; then
           switch=true
         fi
       fi
       if [ "$switch" = true ]; then
         registry_access
       else
-        echo "Note: this release is also on $INSTALL_FOZRIA_REGISTRY. Carrying on with ghcr.io, whose downloads will be retired; to switch, re-run with FOZRIA_REGISTRY_USERNAME=you@example.com FOZRIA_REGISTRY_TOKEN=<64-hex token> before bash on the curl line."
+        echo "Note: this release is also on $INSTALL_FOZRIA_REGISTRY. Carrying on with ghcr.io, whose downloads will be retired; to switch, run the command from https://$INSTALL_FOZRIA_APP under '$INSTALL_FOZRIA_INSTALL_WHERE', or re-run with FOZRIA_REGISTRY_USERNAME=you@example.com FOZRIA_REGISTRY_TOKEN=<64-hex token> before bash on the curl line."
       fi
     else
       registry_access
@@ -2829,7 +3035,7 @@ main() {
     if [ -z "$NEW_FOZRIA_TOKEN" ] && [ -z "$SAVED_FOZRIA_TOKEN" ]; then
       if [ "$INSTALL_YES" != true ] && have_tty; then
         echo
-        echo "One-click updates need your Fozria email and an API token saved in"
+        echo "One-click updates need your $INSTALL_FOZRIA_APP email and an API token saved in"
         echo "$ENV_FILE. You can skip this and re-run the installer later."
         if confirm "Enter them now?"; then
           login_fozria_interactive
