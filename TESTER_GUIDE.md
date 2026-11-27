@@ -1,11 +1,14 @@
-# Fozzie private beta: tester guide
+# Fozria private beta: tester guide
 
-Thanks for testing Fozzie. This guide covers installing it, keeping it up
+Thanks for testing Fozria. This guide covers installing it, keeping it up
 to date, backups, running agents, and removing it again. Everything runs on your own
 machine in Docker. By default nothing is reachable from outside it: every
 port listens on `localhost` only. You can opt in to opening the dashboard
 to your network; see
-[Using Fozzie from another device](#using-fozzie-from-another-device).
+[Using Fozria from another device](#using-fozria-from-another-device).
+
+Fozria (pronounced FOZ-ree-uh) was called Fozzie during early development;
+you may still see the old name in URLs, package names and settings.
 
 ## What you need
 
@@ -13,7 +16,7 @@ to your network; see
   Linux. It needs Docker Compose **v2.20.0 or newer**: check with
   `docker compose version`.
 - **A Fozria account on app.functionberry.com** (Mark invites you).
-  Fozzie's images are on `registry.functionberry.com`, and access is per
+  Fozria's images are on `registry.functionberry.com`, and access is per
   account.
 - **About 2 GB of free disk** for the images, plus whatever your data
   grows to.
@@ -23,7 +26,7 @@ to your network; see
 1. Mark sends you an invite to <https://app.functionberry.com>. Accept it
    and create your account.
 2. Mark adds you to the **Release testers** group. Until he has, the
-   installer can log in but can't download Fozzie.
+   installer can log in but can't download Fozria.
 
 ## Creating an API token
 
@@ -41,10 +44,14 @@ and re-run the installer.
 
 ### Already testing with a GitHub token?
 
-Nothing changes for you yet. An install that already has a GitHub token
-keeps downloading from GitHub's registry (`ghcr.io`), and the installer
-won't ask for anything new. Switching to a Fozria account comes with a
-later update. If your GitHub token expires before then, create a new
+Fozria's downloads are moving from GitHub's registry (`ghcr.io`) to
+`registry.functionberry.com`. When you re-run the installer in a
+terminal, it now offers to switch your install to your Fozria account:
+say yes, and enter your Fozria email and API token (see
+[Moving an existing install](#moving-an-existing-install)). If you say
+no, or run it with `--yes`, it carries on with `ghcr.io` as before, and
+your GitHub token keeps working until those downloads are retired. If it
+expires before you switch, create a new
 **classic** token with only `read:packages` ticked at
 <https://github.com/settings/tokens/new?scopes=read:packages&description=Fozzie%20beta>,
 and re-run the installer.
@@ -54,11 +61,11 @@ and re-run the installer.
 In a terminal, run:
 
 ```sh
-curl -fsSL https://functionberry.github.io/fozzie-releases/install.sh | bash
+curl -fsSL https://releases.functionberry.com/install.sh | bash
 ```
 
 It checks Docker, then asks for your Fozria email and API token (the
-token isn't shown as you type). It downloads Fozzie, starts it, and opens
+token isn't shown as you type). It downloads Fozria, starts it, and opens
 your browser on a "create your account" page. The first install can take
 a few minutes.
 
@@ -75,31 +82,33 @@ To run it without any questions, set the credentials in the environment
 and pass `--yes`:
 
 ```sh
-curl -fsSL https://functionberry.github.io/fozzie-releases/install.sh | FOZRIA_REGISTRY_USERNAME=you@example.com FOZRIA_REGISTRY_TOKEN=... bash -s -- --yes
+curl -fsSL https://releases.functionberry.com/install.sh | FOZRIA_REGISTRY_USERNAME=you@example.com FOZRIA_REGISTRY_TOKEN=... bash -s -- --yes
 ```
 
 ## More than one instance, and other ports
 
-By default Fozzie uses ports 4000 and 5173, at <http://localhost:5173>. To
+By default Fozria uses ports 4000 and 5173, at <http://localhost:5173>. To
 run a second, separate instance, give it a name and two free ports the
 first time:
 
 ```sh
-curl -fsSL https://functionberry.github.io/fozzie-releases/install.sh | bash -s -- --name second --core-port 4010 --dashboard-port 5183
+curl -fsSL https://releases.functionberry.com/install.sh | bash -s -- --name second --core-port 4010 --dashboard-port 5183
 ```
 
 Later runs for that instance just need `--name second`: its ports are
 remembered. Run with `--help` to see every option.
 
-## Using Fozzie from another device
+<a id="using-fozzie-from-another-device"></a>
 
-By default Fozzie only answers on this computer. To open it from another
+## Using Fozria from another device
+
+By default Fozria only answers on this computer. To open it from another
 device, such as a laptop or phone, re-run the installer with
 `--public-host` and this computer's name or IP address as other devices
 see it:
 
 ```sh
-curl -fsSL https://functionberry.github.io/fozzie-releases/install.sh | bash -s -- --public-host officemacbook.local
+curl -fsSL https://releases.functionberry.com/install.sh | bash -s -- --public-host officemacbook.local
 ```
 
 Add `--name X` for a named instance. On the other device, open
@@ -121,13 +130,13 @@ that address too.
 - Your computer's firewall may need to allow incoming connections on the
   dashboard's port (5173 by default).
 
-> **Before you turn this on.** Fozzie is served over plain HTTP. On a
+> **Before you turn this on.** Fozria is served over plain HTTP. On a
 > local network, your password, sign-in tokens and everything else you
 > send travel unencrypted, so anyone else on that network can read them.
 > Only use it on a trusted home network. Anywhere else, use a private
 > network such as [Tailscale](https://tailscale.com) (with
 > `--bind-address` set to its `100.x` address), or put an HTTPS reverse
-> proxy in front of Fozzie. **Never port-forward Fozzie to the
+> proxy in front of Fozria. **Never port-forward Fozria to the
 > internet.** The default stays localhost-only, and `--localhost-only`
 > always takes you back to it.
 
@@ -137,11 +146,11 @@ unless you passed `--yes`.
 ### On a server, at your own domain (HTTPS)
 
 On a server reachable from the internet, with a domain name whose DNS A
-record points at it, `--domain` serves Fozzie at `https://<domain>`
+record points at it, `--domain` serves Fozria at `https://<domain>`
 instead:
 
 ```sh
-curl -fsSL https://functionberry.github.io/fozzie-releases/install.sh | bash -s -- --domain app.example.com
+curl -fsSL https://releases.functionberry.com/install.sh | bash -s -- --domain app.example.com
 ```
 
 It adds a [Caddy](https://caddyserver.com) container that listens on
@@ -152,13 +161,13 @@ adds the standard security headers, including one that tells browsers
 to always use HTTPS for that domain (`--hsts subdomains` extends it to
 every subdomain). Ports 80 and 443 must be free on the server and
 allowed in both your cloud provider's firewall and the server's own. The
-choice is remembered, and `--no-domain` switches back. The "Deploy to a server" guide in Fozzie's
+choice is remembered, and `--no-domain` switches back. The "Deploy to a server" guide in Fozria's
 repository (`docs/DEPLOY_TO_A_SERVER.md`) walks through it from an empty
 server.
 
 ## Where things live
 
-Fozzie installs into `~/fozzie` (or `~/fozzie-<name>` for a named
+Fozria installs into `~/fozzie` (or `~/fozzie-<name>` for a named
 instance). That directory holds two files, three with `--domain` and five
 with `--registry-domain`:
 
@@ -188,8 +197,8 @@ that key. Keep a private copy of `.env` somewhere safe.
 ## Updating
 
 When a new release is out, admins see an "Update available" banner at
-the top of Fozzie. Click **Update** there, or in Settings → Updates, and
-confirm. Fozzie then:
+the top of Fozria. Click **Update** there, or in Settings → Updates, and
+confirm. Fozria then:
 
 1. takes a backup;
 2. downloads the new version;
@@ -199,18 +208,44 @@ confirm. Fozzie then:
 A progress window shows each step. You can hide it and keep using any page
 you already have open. It comes back if you reload. When it says "Updated",
 click **Reload** to load the new version. If the new version doesn't
-start, Fozzie automatically goes back to the version you had, and your data
+start, Fozria automatically goes back to the version you had, and your data
 is safe.
 
 You can always update by re-running the same install command instead (with
 `--name` if you used one). It keeps your data and settings, takes a backup
-first, and then switches to the latest release. Do this if Fozzie says your
+first, and then switches to the latest release. Do this if Fozria says your
 version is too old to update in place, that the updater is out of date, or
 that this install's compose file is out of date.
 
+### Moving an existing install
+
+Fozria's releases have moved to <https://releases.functionberry.com>. An
+install from before the move keeps checking the old address until you
+re-run the installer once from the new one (with `--name X` if you used
+one):
+
+```sh
+curl -fsSL https://releases.functionberry.com/install.sh | bash
+```
+
+If your install still downloads from GitHub (`ghcr.io`), the installer
+offers to switch it to your Fozria account: say yes, then enter your
+Fozria email and API token (see [Creating an API token](#creating-an-api-token)).
+It keeps your data and settings, takes a backup first, and from then on
+the install checks `releases.functionberry.com` for updates.
+
+To do it without any questions, read the email and token into the
+environment first (the token isn't shown as you type), then pass `--yes`:
+
+```sh
+read -rp "Fozria email: " FOZRIA_REGISTRY_USERNAME
+read -rsp "API token: " FOZRIA_REGISTRY_TOKEN; echo
+curl -fsSL https://releases.functionberry.com/install.sh | FOZRIA_REGISTRY_USERNAME="$FOZRIA_REGISTRY_USERNAME" FOZRIA_REGISTRY_TOKEN="$FOZRIA_REGISTRY_TOKEN" bash -s -- --yes
+```
+
 ## Backups
 
-Fozzie backs itself up daily and keeps the newest 14 backups, in the
+Fozria backs itself up daily and keeps the newest 14 backups, in the
 `fozzie_backups_local` Docker volume. The installer also takes one before
 every update.
 Settings → Backups shows when the last one ran, and whether a later one
@@ -254,8 +289,8 @@ it up again. It doesn't print a link or change your password:
 docker compose -p fozzie-local --env-file .env exec --user node core-api node dist/adminCli.js reset-password --reset-2fa you@example.com
 ```
 
-Fozzie must be running: `exec` needs the `core-api` container up. If it
-isn't, start Fozzie first (see [Stopping and starting](#stopping-and-starting)).
+Fozria must be running: `exec` needs the `core-api` container up. If it
+isn't, start Fozria first (see [Stopping and starting](#stopping-and-starting)).
 
 Anyone with a terminal on this computer can do this, so it works even when
 you're the only admin.
@@ -268,7 +303,7 @@ docker compose -p fozzie-local --env-file .env stop    # stop
 docker compose -p fozzie-local --env-file .env up -d   # start again
 ```
 
-Fozzie also starts by itself when Docker does, until you stop it.
+Fozria also starts by itself when Docker does, until you stop it.
 
 ## Uninstalling
 
@@ -277,12 +312,12 @@ installer can ask you which one you want and do it for you (add
 `--name` if you used one):
 
 ```sh
-curl -fsSL https://functionberry.github.io/fozzie-releases/install.sh | bash -s -- --uninstall
+curl -fsSL https://releases.functionberry.com/install.sh | bash -s -- --uninstall
 ```
 
 Or do it by hand:
 
-**(a) Remove Fozzie, but keep your data to reinstall later.**
+**(a) Remove Fozria, but keep your data to reinstall later.**
 
 ```sh
 cd ~/fozzie
@@ -323,7 +358,7 @@ You can use a model server running on your own computer, such as Ollama,
 as an AI provider:
 
 1. Start Ollama so Docker can reach it. By default it only accepts
-   connections from your computer itself, which shuts Fozzie out:
+   connections from your computer itself, which shuts Fozria out:
 
    ```sh
    OLLAMA_HOST=0.0.0.0 ollama serve
@@ -338,13 +373,13 @@ as an AI provider:
    Environment="OLLAMA_HOST=0.0.0.0"
    ```
 
-2. In Fozzie, go to Settings → AI resources and click **Add resource**.
+2. In Fozria, go to Settings → AI resources and click **Add resource**.
    Pick the **OpenAI-compatible** provider type, and set the base URL to
-   `http://host.docker.internal:11434/v1`. Don't use `localhost`: Fozzie's
+   `http://host.docker.internal:11434/v1`. Don't use `localhost`: Fozria's
    server runs in its own container, so to it `localhost` means that
    container, not your computer.
 
-3. `host.docker.internal` works on Mac, Windows and Linux (Fozzie's compose
+3. `host.docker.internal` works on Mac, Windows and Linux (Fozria's compose
    file sets it up on Linux). If listing the models fails, the error says
    what to fix.
 
@@ -356,7 +391,7 @@ installer turns on by default. It uses an AI provider you supply.
 
 To set one up:
 
-1. In Fozzie, go to **Agents** and click **Set up an agent**.
+1. In Fozria, go to **Agents** and click **Set up an agent**.
 2. Give it a name, pick an AI provider and model (and a budget, if the
    provider charges per use), and choose its repository.
 3. The last step offers a first task, set up as a coding task and
@@ -369,11 +404,11 @@ To turn the agent service off, re-run the installer with `--no-agents`
 on, use `--with-agents`:
 
 ```sh
-curl -fsSL https://functionberry.github.io/fozzie-releases/install.sh | bash -s -- --no-agents
-curl -fsSL https://functionberry.github.io/fozzie-releases/install.sh | bash -s -- --with-agents
+curl -fsSL https://releases.functionberry.com/install.sh | bash -s -- --no-agents
+curl -fsSL https://releases.functionberry.com/install.sh | bash -s -- --with-agents
 ```
 
-If you installed Fozzie before agents shipped, re-run the installer once
+If you installed Fozria before agents shipped, re-run the installer once
 to add the agent service: in-app updates don't add it. Until then, the
 Agents page says "Agent service not set up on this instance" and shows
 the command to run.
@@ -422,7 +457,7 @@ file. The setting has no `paths`, `lint` or `build`.
 
 If the branch has a `.fozzie/test.json`, it's used and the setting is
 ignored entirely: fields aren't mixed from both. If the file is invalid,
-Fozzie doesn't fall back to the setting. It shows the file's error, and
+Fozria doesn't fall back to the setting. It shows the file's error, and
 the fix is to correct the file.
 
 **What Run tests does.** Your agent merges the latest main into its
@@ -430,7 +465,7 @@ branch, runs exactly the declared setup, lint, build and command
 within the timeout,
 and passes or fails on the exit code. If the tests fail, the agent adds
 the fixes as new steps and runs them again. The result is recorded as
-reported by the agent: Fozzie doesn't yet run your tests itself to check
+reported by the agent: Fozria doesn't yet run your tests itself to check
 it. With no command declared, nothing runs, the step records "No test
 command declared -- untested", and the pull request goes on to review.
 With an invalid file, Run tests fails and adds one step to fix the file.
@@ -482,7 +517,7 @@ agents how to work on it. All of them are optional.
     on the agent's page, then set the step back to Not started.
   - Agents may add or improve it in their pull requests.
 - `.fozzie/AGENTS.md` is extra guidance for your agents, read after the
-  `AGENTS.md` (or `CLAUDE.md`) at the repository's root. Fozzie's
+  `AGENTS.md` (or `CLAUDE.md`) at the repository's root. Fozria's
   workflow rules still win over both.
 
 ## Feedback
@@ -507,7 +542,7 @@ token (your account password won't work). Make a new one (see
 again.
 
 **"Your Fozria account isn't in Release testers".** Your token works, but
-your account can't download Fozzie yet. Ask Mark to add your email to
+your account can't download Fozria yet. Ask Mark to add your email to
 Release testers, then run the installer again.
 
 **"Too many login attempts".** Too many tries from your network in a short
@@ -571,7 +606,7 @@ obvious.
 - this computer's firewall allows incoming connections on the dashboard's
   port;
 - you re-ran the installer with `--public-host` (see
-  [Using Fozzie from another device](#using-fozzie-from-another-device)):
+  [Using Fozria from another device](#using-fozria-from-another-device)):
   its summary prints a "From other devices" address;
 - you used the dashboard's port (5173 by default), not 4000: core-api's
   port is never opened to the network.
@@ -590,7 +625,7 @@ docker compose -p fozzie-local --env-file .env ps updater
 ```
 
 If it isn't listed as running, re-run the installer: that starts it again,
-and also updates Fozzie.
+and also updates Fozria.
 
 **"Agent service not set up on this instance."** This install doesn't
 run the agent service yet: it was probably installed before agents
@@ -610,11 +645,11 @@ you turned agents off with `--no-agents`, turn them back on with
 `--with-agents` (see [Agents](#agents)).
 
 **"The orchestrator's heartbeat to core-api is failing (HTTP 401)" (or
-404).** The agent service and Fozzie don't agree on the secret it reports
+404).** The agent service and Fozria don't agree on the secret it reports
 in with. Re-run the installer: it sets the secret up again for both.
 
-**"Fozzie couldn't go back on its own."** An update failed, and so did the
+**"Fozria couldn't go back on its own."** An update failed, and so did the
 automatic rollback. The progress window shows the steps to fix it by hand,
-in a terminal. Follow them, then check Fozzie starts. If it still doesn't,
+in a terminal. Follow them, then check Fozria starts. If it still doesn't,
 your backups are safe in their own volume (see [Backups](#backups)):
 contact Mark before restoring one.

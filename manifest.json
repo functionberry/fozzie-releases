@@ -1,7 +1,31 @@
 {
   "schema": 1,
-  "latest": "0.1.16",
+  "latest": "0.1.17",
+  "movedTo": "https://releases.functionberry.com/manifest.json",
   "releases": [
+    {
+      "version": "0.1.17",
+      "publishedAt": "2026-11-27T03:21:55.260Z",
+      "minUpgradableFrom": "0.1.0",
+      "lastMigration": "20261216120000_containment_annotation",
+      "notes": "Fozria: the new name throughout, releases now served from releases.functionberry.com (the old address keeps working and says it moved), the back end for comments on work items, NVIDIA NIM and Custom AI resources can run agents, and clearer model tests.\n\n- Discussion 1d (core): the public comments API -- addComment, editComment, deleteComment, toggleReaction, Query.comments, Entity.commentCount and two MCP tools (ADR-0333)\n- Discussion 1c (core): hide comments from browsing, reports, forecasts, Needs attention, the home digest, search and the archive sweep (ADR-0333)\n- Discussion 1b (core): comments never change status, roll-ups, dispatch or the PR pipeline (ADR-0333)\n- Test this model: say whether agents can run on the resource, and test Custom with a base URL\n- Releases bridge 2b (installer): default to releases.functionberry.com, legacy copy says it moved, offer GitHub-only installs the switch\n- Releases bridge 2c: core exposes movedTo as UpdateStatus.releasesMovedTo, Updates page shows a \"Releases have moved\" notice\n- Agent dispatch: NvidiaNim and Custom profiles run on Goose's openai provider\n- Discussion 1a (core): comments as entities with Containment.annotation (ADR-0333)\n- Releases bridge 2a: publish to fozria-releases and fozzie-releases, with movedTo (ADR-0331)\n- Fozria rename 1d: guard against user-visible \"Fozzie\", plus ADR-0332\n- Rename 1b (core): user-facing \"Fozzie\" -> \"Fozria\" in core/src and system templates\n- Rename 1b (dashboard): user-visible \"Fozzie\" becomes \"Fozria\", plus an About Fozria page\n- Make pullRequestByEntityIdPerf test bound gitPullRequest lookups after warm-up\n- ReportProgressCard: show an error, not Loading…, when the child counts fail\n",
+      "images": {
+        "core-api": "ghcr.io/functionberry/fozzie-dist-core-api@sha256:9691f95547b6fe4f8b035c5d5869576acc1124d8716faa01ccbc5d7a1ceeccb4",
+        "dashboard": "ghcr.io/functionberry/fozzie-dist-dashboard@sha256:eb9571f41558c4794be9df3e7a84d887475985a1af204d9bb3854b153addb928",
+        "updater": "ghcr.io/functionberry/fozzie-dist-updater@sha256:616dad42e0fe7446dd45553a8795b429c62526305a65e7893f4ba6e8d4cb962d",
+        "agent": "ghcr.io/functionberry/fozzie-dist-agent@sha256:a5d43682ed6a90f82f28cbe1fab0735d09517c9e2a68657d33026fdcdf704aa9",
+        "orchestrator": "ghcr.io/functionberry/fozzie-dist-orchestrator@sha256:f31b9702a6a87758448d8d7bbb025cfc23195e198b6bfbd82d16dcc5c21d92b4"
+      },
+      "composeSha256": "712f27f050880367c8dd74099cc94444b69f756e1dbfab0e01c3f9608958cfad",
+      "migrationsSha256": "11000546c44c1a16e35896b2691ca89d1bacc7d4d37ede4f2e3d4173c84708c3",
+      "mirrors": {
+        "core-api": "registry.functionberry.com/fozria-dist-core-api@sha256:9691f95547b6fe4f8b035c5d5869576acc1124d8716faa01ccbc5d7a1ceeccb4",
+        "dashboard": "registry.functionberry.com/fozria-dist-dashboard@sha256:eb9571f41558c4794be9df3e7a84d887475985a1af204d9bb3854b153addb928",
+        "updater": "registry.functionberry.com/fozria-dist-updater@sha256:616dad42e0fe7446dd45553a8795b429c62526305a65e7893f4ba6e8d4cb962d",
+        "agent": "registry.functionberry.com/fozria-dist-agent@sha256:a5d43682ed6a90f82f28cbe1fab0735d09517c9e2a68657d33026fdcdf704aa9",
+        "orchestrator": "registry.functionberry.com/fozria-dist-orchestrator@sha256:f31b9702a6a87758448d8d7bbb025cfc23195e198b6bfbd82d16dcc5c21d92b4"
+      }
+    },
     {
       "version": "0.1.16",
       "publishedAt": "2026-11-26T04:39:52.947Z",

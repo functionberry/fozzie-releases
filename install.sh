@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Fozzie private-beta installer (ADR-0172 decision 8): a running Fozzie
+# Fozria private-beta installer (ADR-0172 decision 8): a running Fozria
 # from the published release images, with nothing to clone or build.
 #
 # Install, or update to the latest release (the same command):
-#   curl -fsSL https://functionberry.github.io/fozzie-releases/install.sh | bash
+#   curl -fsSL https://releases.functionberry.com/install.sh | bash
 #
 # A second, independent instance: give it a name and two free ports the
 # first time. Later runs just need the name -- its ports are remembered.
-#   curl -fsSL https://functionberry.github.io/fozzie-releases/install.sh | bash -s -- --name second --core-port 4010 --dashboard-port 5183
+#   curl -fsSL https://releases.functionberry.com/install.sh | bash -s -- --name second --core-port 4010 --dashboard-port 5183
 #
 # The agent service runs by default (ADR-0215). --no-agents turns it off,
 # and later runs remember that; --with-agents turns it back on.
 #
 # On a server with a domain name pointing at it: --domain HOST serves
-# Fozzie at https://HOST through a Caddy container on ports 80 and 443,
+# Fozria at https://HOST through a Caddy container on ports 80 and 443,
 # with automatic Let's Encrypt certificates (ADR-0277's 2026-11-19
 # amendment), with the standard security headers set at the edge
 # (2026-11-21 amendment; --hsts widens HSTS). Later runs remember it;
@@ -34,9 +34,11 @@
 # when the release is also on registry.functionberry.com, from there,
 # logged in with your Fozria email and API token (asked for if they
 # aren't in the environment or .env), falling back to ghcr.io only if the
-# registry can't be reached; when it isn't, or the install only has a
-# GitHub token so far, from ghcr.io, logging in if the images need it
-# (walking you through creating a read:packages token); pulls the
+# registry can't be reached (an install that only has a GitHub token so
+# far is offered the switch to a Fozria account when run on a terminal,
+# and otherwise stays on ghcr.io); when it isn't, from ghcr.io, logging
+# in if the images need it (walking you through creating a read:packages
+# token); pulls the
 # agent and orchestrator images when agents are on (carrying on without
 # agents if it can't); writes docker-compose.yml and .env (chmod 600,
 # secrets generated once and kept) into ~/fozzie or ~/fozzie-<name>; takes
@@ -204,7 +206,11 @@ INSTALL_ENV_VALUE_REGEX="^[${INSTALL_UPPER}${INSTALL_LOWER}${INSTALL_DIGITS}+/=.
 # The keys install_merge_env owns, in the order it appends them.
 INSTALL_MANAGED_KEYS="FOZZIE_VERSION FOZZIE_CORE_API_IMAGE FOZZIE_DASHBOARD_IMAGE FOZZIE_UPDATER_IMAGE POSTGRES_PASSWORD FOZZIE_ENCRYPTION_KEY FOZZIE_UPDATER_TOKEN CORE_API_PORT DASHBOARD_PORT GHCR_USERNAME GHCR_TOKEN COMPOSE_PROJECT FOZZIE_INSTALL_DIR FOZZIE_AGENT_IMAGE FOZZIE_ORCHESTRATOR_IMAGE FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET FOZZIE_INSTANCE_NAME FOZZIE_AGENTS_ENABLED COMPOSE_PROFILES FOZZIE_BIND_ADDRESS FOZZIE_PUBLIC_HOST FOZZIE_DASHBOARD_URL FOZZIE_CORE_PUBLIC_URL FOZZIE_DOMAIN FOZZIE_TRUSTED_PROXY_HOPS FOZZIE_HSTS FOZZIE_REGISTRY_DOMAIN FOZZIE_REGISTRY_HTTP_SECRET FOZRIA_REGISTRY_USERNAME FOZRIA_REGISTRY_TOKEN"
 
-INSTALL_ENV_HEADER="# Managed by the Fozzie installer: it rewrites the keys it manages on every run and keeps every other line. Holds secrets -- keep it private."
+INSTALL_ENV_HEADER="# Managed by the Fozria installer: it rewrites the keys it manages on every run and keeps every other line. Holds secrets -- keep it private."
+# The header before the product was renamed Fozria: existing installs' .env
+# files still start with it, so install_merge_env drops it rather than keeping
+# it as an unmanaged comment next to the new header.
+INSTALL_ENV_LEGACY_HEADER="# Managed by the Fozzie installer: it rewrites the keys it manages on every run and keeps every other line. Holds secrets -- keep it private."
 
 INSTALL_PAT_URL="https://github.com/settings/tokens/new?scopes=read:packages&description=Fozzie%20beta"
 
@@ -213,10 +219,10 @@ install_usage() {
   cat <<'USAGE'
 Usage: install.sh [options]
 
-  curl -fsSL https://functionberry.github.io/fozzie-releases/install.sh | bash
-  curl -fsSL https://functionberry.github.io/fozzie-releases/install.sh | bash -s -- [options]
+  curl -fsSL https://releases.functionberry.com/install.sh | bash
+  curl -fsSL https://releases.functionberry.com/install.sh | bash -s -- [options]
 
-Installs Fozzie from the published release images, or updates an existing
+Installs Fozria from the published release images, or updates an existing
 install to the latest release. Re-running it is safe: secrets and data are
 kept.
 
@@ -246,9 +252,9 @@ Options:
                           Only the dashboard's port is ever opened to the
                           network; core-api's stays local. The choice is
                           remembered by later runs and updates. Plain HTTP:
-                          read "Using Fozzie from another device" in the
+                          read "Using Fozria from another device" in the
                           tester guide first.
-  --domain HOST           Serve Fozzie at https://HOST, with automatic Let's
+  --domain HOST           Serve Fozria at https://HOST, with automatic Let's
                           Encrypt certificates, through a Caddy container
                           on ports 80 and 443. Those ports must be free and
                           reachable from the internet, and HOST's DNS A
@@ -610,7 +616,7 @@ install_parse_args() {
     fi
   fi
   if [ -n "$INSTALL_PUBLIC_HOST" ] && install_is_loopback "$INSTALL_BIND_ADDRESS"; then
-    printf -- '--bind-address %s and --public-host contradict each other -- pick one: %s keeps Fozzie on this machine only.\n\n' "$INSTALL_BIND_ADDRESS" "$INSTALL_BIND_ADDRESS" >&2
+    printf -- '--bind-address %s and --public-host contradict each other -- pick one: %s keeps Fozria on this machine only.\n\n' "$INSTALL_BIND_ADDRESS" "$INSTALL_BIND_ADDRESS" >&2
     install_usage >&2
     return 1
   fi
@@ -833,7 +839,7 @@ install_hsts_value() {
 install_caddyfile() {
   local domain="$1" hsts registry="${3:-}"
   hsts="$(install_hsts_value "$2")" || return 1
-  printf '%s\n' "# Managed by the Fozzie installer (--domain): rewritten on every run, so edits here are overwritten."
+  printf '%s\n' "# Managed by the Fozria installer (--domain): rewritten on every run, so edits here are overwritten."
   install_caddy_site "$domain" "$hsts" dashboard:5173
   if [ -n "$registry" ]; then
     printf '\n'
@@ -879,7 +885,7 @@ install_caddy_site() {
 install_registry_config() {
   local registry="$1" app="$2"
   cat <<CONFIG
-# Managed by the Fozzie installer (--registry-domain): rewritten on every run, so edits here are overwritten.
+# Managed by the Fozria installer (--registry-domain): rewritten on every run, so edits here are overwritten.
 version: 0.1
 log:
   fields:
@@ -924,7 +930,7 @@ install_registry_supervisor() {
   # published install.sh would be a second shebang there.
   printf '%s\n' '#!/bin/sh'
   cat <<'SUPERVISOR'
-# Managed by the Fozzie installer (--registry-domain): rewritten on every
+# Managed by the Fozria installer (--registry-domain): rewritten on every
 # run, so edits here are overwritten. The release registry's supervisor
 # (ADR-0325), run as the registry container's entrypoint.
 set -u
@@ -1195,13 +1201,13 @@ install_public_urls() {
 # (ADR-0277). install.sh prints it; tests check it.
 install_network_warning() {
   cat <<'WARNING'
-WARNING: this opens Fozzie's dashboard to other devices on your network.
+WARNING: this opens Fozria's dashboard to other devices on your network.
   - It's plain HTTP: on a LAN, passwords, sign-in tokens and everything
     else you send travel unencrypted, readable by anyone on that network.
   - Beyond a trusted home network, use a private network such as
     Tailscale (bind to its 100.x address with --bind-address) or put an
     HTTPS reverse proxy in front instead.
-  - Never port-forward Fozzie to the internet.
+  - Never port-forward Fozria to the internet.
   - Only the dashboard's port is opened; core-api's stays on this machine.
   - The default is localhost-only; re-run the installer with
     --localhost-only to switch back.
@@ -1213,7 +1219,7 @@ WARNING
 # prints it; tests check it.
 install_domain_notice() {
   cat <<'NOTICE'
-NOTICE: this serves Fozzie on the internet, over HTTPS.
+NOTICE: this serves Fozria on the internet, over HTTPS.
   - It opens ports 80 and 443 to the internet. Caddy gets and renews a
     certificate from Let's Encrypt by itself, and redirects HTTP to HTTPS.
   - Only Caddy listens publicly: the dashboard and core-api stay on
@@ -1693,6 +1699,7 @@ install_merge_env() {
   if [ -n "$existing" ] && [ -f "$existing" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
       [ "$line" != "$INSTALL_ENV_HEADER" ] || continue
+      [ "$line" != "$INSTALL_ENV_LEGACY_HEADER" ] || continue
       key="${line%%=*}"
       [[ "$key" =~ $INSTALL_KEY_REGEX ]] || key=""
       case " $INSTALL_MANAGED_KEYS " in
@@ -1785,13 +1792,13 @@ install_docker_error_message() {
       echo "  $INSTALL_PAT_URL"
       ;;
     login-needed)
-      echo "Logging in to ghcr.io (GitHub's container registry) is needed to download Fozzie."
+      echo "Logging in to ghcr.io (GitHub's container registry) is needed to download Fozria."
       ;;
     bad-credentials)
       echo "GitHub didn't accept that username and token: one of them is wrong, or the token has expired or been revoked."
       ;;
     no-access)
-      echo "Your GitHub account hasn't been given access to the Fozzie packages yet -- ask Mark to add ${username:-your GitHub username}, accept the invites, then run this again."
+      echo "Your GitHub account hasn't been given access to the Fozria packages yet -- ask Mark to add ${username:-your GitHub username}, accept the invites, then run this again."
       ;;
     missing-image)
       echo "This release's image is missing from the registry -- tell Mark."
@@ -1879,7 +1886,7 @@ install_registry_error_message() {
       echo "$INSTALL_FOZRIA_APP didn't accept that email and API token: the token has expired, been revoked, or isn't an API token (your account password won't work). Make a new one on $INSTALL_FOZRIA_APP under $INSTALL_FOZRIA_TOKENS_WHERE."
       ;;
     login-needed)
-      echo "Logging in to $INSTALL_FOZRIA_REGISTRY with your Fozria email and API token is needed to download Fozzie."
+      echo "Logging in to $INSTALL_FOZRIA_REGISTRY with your Fozria email and API token is needed to download Fozria."
       ;;
     no-access)
       echo "Your Fozria account isn't in Release testers on $INSTALL_FOZRIA_APP; ask Mark to add ${email:-your email}, then run this again."
@@ -1977,7 +1984,7 @@ install_core_api_failure_hint() {
       echo "the database refused core-api's password: POSTGRES_PASSWORD in .env isn't the one this data was created with. Put back the .env this data was installed with (or re-run with --import-env pointing at it)."
       ;;
     *"invalid port number"*)
-      echo "the database password breaks core-api's DATABASE_URL -- a bug in Fozzie 0.1.0's installer. If you haven't used this instance yet, reset it: 'down -v', delete POSTGRES_PASSWORD from .env, and run the installer again."
+      echo "the database password breaks core-api's DATABASE_URL -- a bug in the 0.1.0 installer. If you haven't used this instance yet, reset it: 'down -v', delete POSTGRES_PASSWORD from .env, and run the installer again."
       ;;
     *"p1001"* | *"can't reach database server"*)
       echo "core-api can't reach the database: postgres isn't running or isn't healthy. Check its logs with the same command, ending in 'logs postgres'."
@@ -1986,8 +1993,17 @@ install_core_api_failure_hint() {
   return 0
 }
 
-FOZZIE_RELEASES_URL="${FOZZIE_RELEASES_URL:-https://functionberry.github.io/fozzie-releases}"
+FOZZIE_RELEASES_URL="${FOZZIE_RELEASES_URL:-https://releases.functionberry.com}"
 FOZZIE_RELEASES_URL="${FOZZIE_RELEASES_URL%/}"
+
+# Whether this copy is the one served from the old releases site
+# (functionberry.github.io/fozzie-releases). The release scripts flip it
+# to true only in the copy they publish to the legacy fozzie-releases
+# repo (release_mark_legacy_installer, ADR-0331), so that copy says
+# Fozria has moved; everything else about it is the same, including the
+# default FOZZIE_RELEASES_URL above, so a run from the old URL moves the
+# install to the new site.
+INSTALL_SERVED_FROM_OLD_URL=true
 
 # Where prompts are read from and written to. Overridable only so the
 # tests can make sure there's no terminal, or answer from a file.
@@ -2076,7 +2092,7 @@ login_interactive() {
   if [ "$EXPLAINED_PAT" != true ]; then
     EXPLAINED_PAT=true
     echo
-    echo "Fozzie's images are in GitHub's container registry (ghcr.io), which needs"
+    echo "Fozria's images are in GitHub's container registry (ghcr.io), which needs"
     echo "your GitHub username and a classic personal access token to download them."
     echo "Create one here -- tick ONLY read:packages, and pick an expiry you're happy with:"
     echo "  $INSTALL_PAT_URL"
@@ -2120,7 +2136,7 @@ login_fozria_interactive() {
   if [ "$EXPLAINED_FOZRIA" != true ]; then
     EXPLAINED_FOZRIA=true
     echo
-    echo "Fozzie's images are on $INSTALL_FOZRIA_REGISTRY, which needs your Fozria"
+    echo "Fozria's images are on $INSTALL_FOZRIA_REGISTRY, which needs your Fozria"
     echo "account's email and an API token to download them:"
     echo "  1. Accept your invite on https://$INSTALL_FOZRIA_APP and create your account."
     echo "  2. Make an API token there, under $INSTALL_FOZRIA_TOKENS_WHERE."
@@ -2225,7 +2241,7 @@ registry_access() {
     context=pull-auth
   fi
 
-  log "Downloading Fozzie $LATEST_VERSION from $INSTALL_FOZRIA_REGISTRY (this can take a few minutes the first time)"
+  log "Downloading Fozria $LATEST_VERSION from $INSTALL_FOZRIA_REGISTRY (this can take a few minutes the first time)"
   until pull_core "$LATEST_CORE_API_MIRROR"; do
     category="$(install_registry_error_category "$context" "$PULL_OUTPUT")"
     case "$category" in
@@ -2494,7 +2510,7 @@ leftover_data() {
   echo
   echo "  1) Keep my data: I have the old .env (it also holds the encryption key the"
   echo "     data and its backups need, so the password alone isn't enough)."
-  echo "  2) Start fresh: delete all of $PROJECT's data and install a new, empty Fozzie."
+  echo "  2) Start fresh: delete all of $PROJECT's data and install a new, empty Fozria."
   case "$(ask "Pick 1 or 2: ")" in
     1)
       die "" "Copy the .env this data was installed with back to $ENV_FILE and run" \
@@ -2515,13 +2531,13 @@ uninstall() {
   local dc_cmd="cd \"$DIR\" && docker compose -p $PROJECT --env-file .env"
   if ! have_tty; then
     die "Uninstalling asks whether to keep your data, and there's no terminal to ask on." \
-      "Remove Fozzie and keep the data (and keep $ENV_FILE -- re-installing needs it):" \
+      "Remove Fozria and keep the data (and keep $ENV_FILE -- re-installing needs it):" \
       "  $dc_cmd down" \
       "Or delete everything, permanently (data, every backup, then the folder):" \
       "  $dc_cmd down -v && rm -f \"$DIR/docker-compose.yml\" \"$ENV_FILE\" \"$DIR/Caddyfile\" \"$DIR/registry-config.yml\" \"$DIR/registry-supervisor.sh\" && rmdir \"$DIR\""
   fi
   echo
-  echo "Uninstalling Fozzie instance \"$NAME\" ($PROJECT):"
+  echo "Uninstalling Fozria instance \"$NAME\" ($PROJECT):"
   echo "  1) Remove its containers and keep its data, to reinstall later."
   echo "  2) Delete everything: containers, all data and every backup, and $DIR's files."
   case "$(ask "Pick 1 or 2: ")" in
@@ -2552,6 +2568,12 @@ uninstall() {
 }
 
 main() {
+  # The literal new URL, not $FOZZIE_RELEASES_URL: this is about where
+  # the installer itself is served from.
+  if [ "$INSTALL_SERVED_FROM_OLD_URL" = true ]; then
+    echo "Fozria has moved to https://releases.functionberry.com. This installer still works; next time run: curl -fsSL https://releases.functionberry.com/install.sh | bash"
+    echo
+  fi
   install_parse_args "$@" || exit 1
   if [ "$INSTALL_HELP" = true ]; then
     install_usage
@@ -2642,10 +2664,10 @@ main() {
   local compose_version
   compose_version="$(compose_version_from_output "$(docker compose version </dev/null 2>/dev/null || true)")"
   if [ -z "$compose_version" ]; then
-    echo "Warning: couldn't tell which Docker Compose version this is -- Fozzie needs"
+    echo "Warning: couldn't tell which Docker Compose version this is -- Fozria needs"
     echo "$FOZZIE_MIN_COMPOSE_VERSION or newer. Carrying on; if Compose errors below, update it."
   elif ! version_at_least "$compose_version" "$FOZZIE_MIN_COMPOSE_VERSION"; then
-    echo "Docker Compose $compose_version is too old -- Fozzie needs $FOZZIE_MIN_COMPOSE_VERSION or newer."
+    echo "Docker Compose $compose_version is too old -- Fozria needs $FOZZIE_MIN_COMPOSE_VERSION or newer."
     echo "Update Docker Desktop (or the compose plugin), then run this again."
     exit 1
   fi
@@ -2693,7 +2715,7 @@ main() {
 
   # --- 3. The latest release -------------------------------------------
 
-  log "Checking the latest Fozzie release"
+  log "Checking the latest Fozria release"
   if ! curl -fsSL "$FOZZIE_RELEASES_URL/latest.env" -o "$WORK/latest.env" </dev/null; then
     die "Couldn't download $FOZZIE_RELEASES_URL/latest.env -- check your internet connection, then run this again."
   fi
@@ -2709,7 +2731,10 @@ main() {
   # this run downloads them from: the registry when it has them and this
   # install has (or is a new install that can be given) a Fozria API
   # token; otherwise ghcr.io, as before. An install with only a GitHub
-  # token stays on ghcr.io until the Fozria rename's phase 2 moves it.
+  # token is offered the switch to a Fozria account when there's a
+  # terminal to ask on (default no, ADR-0331's 2026-11-26 amendment);
+  # without one, or with --yes, or if the owner says no, it stays on
+  # ghcr.io and says how to switch later.
   NEW_GHCR_USERNAME=""
   NEW_GHCR_TOKEN=""
   NEW_FOZRIA_USERNAME=""
@@ -2730,7 +2755,22 @@ main() {
     if [ -z "${FOZRIA_REGISTRY_USERNAME:-}" ] && [ -z "${FOZRIA_REGISTRY_TOKEN:-}" ] &&
       { [ -z "$SAVED_FOZRIA_USERNAME" ] || [ -z "$SAVED_FOZRIA_TOKEN" ]; } &&
       [ "$GHCR_CREDS_KNOWN" = true ]; then
-      echo "Note: this release is also on $INSTALL_FOZRIA_REGISTRY; switching to a Fozria account comes with a later update. Carrying on with ghcr.io."
+      local switch=false
+      if [ "$INSTALL_YES" != true ] && have_tty; then
+        echo
+        echo "Fozria's downloads are moving from GitHub (ghcr.io) to $INSTALL_FOZRIA_REGISTRY."
+        echo "Switching needs an account on https://$INSTALL_FOZRIA_APP that's in Release"
+        echo "testers, and an API token made there under $INSTALL_FOZRIA_TOKENS_WHERE."
+        echo "This install keeps its data either way."
+        if confirm "Switch this install to your Fozria account now?"; then
+          switch=true
+        fi
+      fi
+      if [ "$switch" = true ]; then
+        registry_access
+      else
+        echo "Note: this release is also on $INSTALL_FOZRIA_REGISTRY. Carrying on with ghcr.io, whose downloads will be retired; to switch, re-run with FOZRIA_REGISTRY_USERNAME=you@example.com FOZRIA_REGISTRY_TOKEN=<64-hex token> before bash on the curl line."
+      fi
     else
       registry_access
     fi
@@ -2757,7 +2797,7 @@ main() {
       fi
     fi
 
-    log "Downloading Fozzie $LATEST_VERSION (this can take a few minutes the first time)"
+    log "Downloading Fozria $LATEST_VERSION (this can take a few minutes the first time)"
     local context=pull category user_for_messages tries=0
     if [ "$logged_in" = true ]; then
       context=pull-auth
@@ -2857,7 +2897,7 @@ main() {
     have_tty || die "$PROJECT already has data, and there's no terminal to confirm on -- re-run with --yes."
     echo
     echo "This will replace the running containers of $PROJECT with the published"
-    echo "Fozzie $LATEST_VERSION images; your data stays."
+    echo "Fozria $LATEST_VERSION images; your data stays."
     confirm "Continue?" || die "Nothing changed."
   fi
 
@@ -2883,14 +2923,14 @@ main() {
     echo
     install_domain_notice
     if [ "$INSTALL_YES" != true ] && have_tty; then
-      confirm "Serve Fozzie at https://$DOMAIN on ports 80 and 443?" || die "Nothing changed."
+      confirm "Serve Fozria at https://$DOMAIN on ports 80 and 443?" || die "Nothing changed."
     fi
   elif ! install_is_loopback "$NET_BIND" &&
     { install_is_loopback "$prev_bind" || [ "$NET_BIND" != "$prev_bind" ] || [ "$NET_HOST" != "$prev_host" ]; }; then
     echo
     install_network_warning
     if [ "$INSTALL_YES" != true ] && have_tty; then
-      confirm "Open Fozzie's dashboard to your network?" || die "Nothing changed."
+      confirm "Open Fozria's dashboard to your network?" || die "Nothing changed."
     fi
   fi
   # HSTS preload can't be taken back quickly: say so once, when it's new.
@@ -2950,7 +2990,7 @@ main() {
   db_password="$(printf '%s\n' "$merged" | sed -n 's/^POSTGRES_PASSWORD=//p' | tail -n 1)"
   if ! install_url_safe_password "$db_password"; then
     die "This instance's database password (POSTGRES_PASSWORD in $ENV_FILE) has characters" \
-      "that break the database connection -- a bug in Fozzie 0.1.0's installer, so core-api" \
+      "that break the database connection -- a bug in the 0.1.0 installer, so core-api" \
       "has never been able to start. If you haven't used this instance yet, reset it:" \
       "  cd \"$DIR\" && docker compose -p $PROJECT --env-file .env down -v" \
       "then delete the POSTGRES_PASSWORD line from $ENV_FILE and run this installer again."
@@ -2991,7 +3031,7 @@ main() {
   # --- 7. Back up before changing versions -----------------------------
 
   if [ "$have_data" = true ] && [ "$old_version" != "$LATEST_VERSION" ]; then
-    log "Pulling the rest of Fozzie $LATEST_VERSION"
+    log "Pulling the rest of Fozria $LATEST_VERSION"
     dc pull || die "Couldn't pull the images -- nothing changed. Check the output above, then run this again."
     log "Taking a backup before switching to $LATEST_VERSION"
     if ! dc run --rm -T backup node dist/backupCli.js run 2>&1 | tee "$WORK/backup.log"; then
@@ -3042,19 +3082,19 @@ main() {
   local profiles
   profiles="$(install_env_get "$ENV_FILE" COMPOSE_PROFILES)"
 
-  log "Starting Fozzie instance \"$NAME\""
+  log "Starting Fozria instance \"$NAME\""
   # COMPOSE_PROFILES in .env decides whether this starts the orchestrator
   # ("agents"), Caddy ("domain") and the release registry ("registry").
   if ! dc up -d; then
     case ",$profiles," in
       *,domain,*)
-        die "" "Couldn't start Fozzie -- see the output above. Serving https://$DOMAIN needs ports" \
+        die "" "Couldn't start Fozria -- see the output above. Serving https://$DOMAIN needs ports" \
           "80 and 443 on this machine: they may already be in use (another web server, or" \
           "another instance serving a domain here). Caddy's logs:" \
           "  $dc_cmd logs caddy"
         ;;
     esac
-    die "" "Couldn't start Fozzie -- see the output above."
+    die "" "Couldn't start Fozria -- see the output above."
   fi
   case ",$profiles," in
     *,domain,*)
@@ -3133,7 +3173,7 @@ main() {
   # --- 9b. Agents on: wait for the orchestrator's first heartbeat ------
 
   if [ "$agents_on" = true ]; then
-    log "Waiting for the agent service to report to Fozzie"
+    log "Waiting for the agent service to report to Fozria"
     # The orchestrator started in the same `up -d` as core-api, so its
     # first heartbeats can fail while core-api migrates: a failing state
     # isn't final here, unlike ./install.sh's wait. It keeps retrying, and
@@ -3151,14 +3191,14 @@ main() {
     done
     case "$orch_state" in
       ok)
-        echo "Agents are on: the orchestrator is running and reporting to Fozzie."
+        echo "Agents are on: the orchestrator is running and reporting to Fozria."
         ;;
       *)
         case "$orch_state" in
           failing)
             code="$(orchestrator_heartbeat_failure_code "$orch_logs")"
             echo "Warning: the orchestrator's heartbeat to core-api is failing (HTTP ${code:-?}),"
-            echo "so Fozzie shows the agent service as not running."
+            echo "so Fozria shows the agent service as not running."
             case "$code" in
               404) echo "core-api didn't get FOZZIE_ORCHESTRATOR_HEARTBEAT_SECRET -- re-run the installer to recreate it." ;;
               401) echo "The orchestrator's and core-api's heartbeat secrets differ -- re-run the installer to recreate both." ;;
@@ -3166,7 +3206,7 @@ main() {
             esac
             ;;
           off)
-            echo "Warning: the orchestrator started with heartbeats off, so Fozzie can't show it as running."
+            echo "Warning: the orchestrator started with heartbeats off, so Fozria can't show it as running."
             ;;
           pending)
             echo "Warning: the orchestrator hasn't reported to core-api yet (waited $((ORCH_WAIT_TRIES * 3))s)."
@@ -3215,7 +3255,7 @@ main() {
   local update_args
   update_args="$(installer_args)"
 
-  log "Fozzie $LATEST_VERSION (instance \"$NAME\") is running at $base_url"
+  log "Fozria $LATEST_VERSION (instance \"$NAME\") is running at $base_url"
   if [ -n "$DOMAIN" ]; then
     echo "Served over HTTPS by Caddy on ports 80 and 443. The first visit can take a few"
     echo "seconds while the certificate is issued. If the page doesn't load, check DNS,"

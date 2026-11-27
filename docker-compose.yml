@@ -95,10 +95,13 @@ services:
       # No FOZZIE_VERSION here: the image's own baked-in version is what
       # instanceVersion reports, so the updater's health check verifies
       # the image that's actually running, not .env's say-so.
-      # Where Fozzie checks for a newer release (ADR-0172). Only this
-      # file sets it, so only an instance run from the release images
-      # ever checks.
-      FOZZIE_RELEASE_MANIFEST_URL: https://functionberry.github.io/fozzie-releases/manifest.json
+      # Where Fozzie checks for a newer release (ADR-0172): the
+      # releases site at releases.functionberry.com since the move
+      # (ADR-0331). Only this file sets it, so only an instance run from
+      # the release images ever checks, and an install moves to the new
+      # site when its owner re-runs the installer, which rewrites this
+      # file.
+      FOZZIE_RELEASE_MANIFEST_URL: https://releases.functionberry.com/manifest.json
       # Shared with the updater, so only it can report update progress
       # (ADR-0172). Generated once by install.sh.
       FOZZIE_UPDATER_TOKEN: ${FOZZIE_UPDATER_TOKEN:-}
@@ -298,7 +301,7 @@ services:
       FOZZIE_UPDATER_TOKEN: ${FOZZIE_UPDATER_TOKEN:-}
       # The same manifest core-api checks; the updater re-reads it itself
       # and takes only image refs pinned by digest from it.
-      FOZZIE_RELEASE_MANIFEST_URL: https://functionberry.github.io/fozzie-releases/manifest.json
+      FOZZIE_RELEASE_MANIFEST_URL: https://releases.functionberry.com/manifest.json
       # To pull the new images: Docker Desktop's credential store isn't
       # readable from a container.
       GHCR_USERNAME: ${GHCR_USERNAME:-}
